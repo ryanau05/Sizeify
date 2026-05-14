@@ -15,3 +15,13 @@ xcuserdata/
 *.xcuserstate
 build/
 DerivedData/
+
+# Android / Gradle
+.gradle/
+local.properties
+*.iml
+.idea/
+captures/
+.cxx/
+app/release/
+**/build/

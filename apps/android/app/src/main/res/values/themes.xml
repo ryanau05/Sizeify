@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Minimal app theme. Compose handles UI styling; this only needs to be a
+         valid Material3-compatible parent for the Activity. -->
+    <style name="Theme.Sizeify" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
