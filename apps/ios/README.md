@@ -28,10 +28,27 @@ xcodebuild test -workspace Sizeify.xcworkspace -scheme Sizeify \
 
 ## Lint and format
 
+Pinned tool versions (run from `apps/ios/`):
+
+| Tool         | Version  | How to install                |
+| ------------ | -------- | ----------------------------- |
+| swift-format | 6.2.3    | Bundled with Swift 6.2 / Xcode 26 (`swift format` — no install needed) |
+| swiftlint    | 0.63.2   | `brew install swiftlint`      |
+
+Config files:
+
+- [.swift-format](.swift-format) — Apple swift-format rules. (Note: Apple's tool is `swift format` with a space; its config file is `.swift-format` with a hyphen — distinct from the third-party `swiftformat` tool, which reads `.swiftformat`.)
+- [.swiftlint.yml](.swiftlint.yml) — SwiftLint config scoped to `Sizeify/`.
+
+Run:
+
 ```bash
-swift format -i -r Sizeify/
-swiftlint
+swift format -i -r Sizeify/   # format in place
+swift format lint -r Sizeify/ # lint without modifying
+swiftlint                     # SwiftLint
 ```
+
+All three should exit 0 on a clean tree.
 
 ## Entitlements
 

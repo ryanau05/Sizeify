@@ -1,0 +1,42 @@
+# SwiftLint config for the Sizeify iOS app.
+# Run from apps/ios/: `swiftlint`
+
+included:
+  - Sizeify
+
+excluded:
+  - build
+  - DerivedData
+  - "**/*.generated.swift"
+
+# Line length: matches the swift-format config (lineLength: 100), with a hard
+# error ceiling slightly above to avoid bike-shedding on borderline cases.
+line_length:
+  warning: 100
+  error: 140
+  ignores_urls: true
+  ignores_function_declarations: false
+  ignores_comments: false
+
+# Identifier names: SwiftUI conventions allow short names like `var body`.
+identifier_name:
+  min_length:
+    warning: 2
+    error: 1
+
+# Default rules we explicitly disable.
+disabled_rules:
+  - todo  # We use TODOs liberally during scaffolding; revisit before v1 launch.
+
+# Useful opt-in rules.
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - explicit_init
+  - first_where
+  - last_where
+  - prefer_zero_over_explicit_init
+  - redundant_nil_coalescing
+  - sorted_first_last
+  - toggle_bool
+  - unneeded_parentheses_in_closure_argument
