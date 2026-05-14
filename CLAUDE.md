@@ -1,8 +1,8 @@
-# Sizify
+# Sizeify
 
 Mobile app that recommends what size to buy in any clothing brand based on garments the user already owns. v1 scope: men's button-down shirts, 10 partner brands, single user.
 
-**Authoritative spec:** `docs/Sizify_PRD_v1.docx`. When in doubt about requirements, read the PRD before guessing. The Glossary (Appendix B) defines domain terms — use them consistently.
+**Authoritative spec:** `docs/Sizeify_PRD_v1.docx`. When in doubt about requirements, read the PRD before guessing. The Glossary (Appendix B) defines domain terms — use them consistently.
 
 ## Architecture
 
@@ -37,9 +37,9 @@ See PRD §8 (data model) and §9 (architecture) for details.
 
 ### iOS (`apps/ios`)
 
-- Open in Xcode: `open Sizify.xcworkspace`
-- Build from CLI: `xcodebuild -workspace Sizify.xcworkspace -scheme Sizify -destination 'platform=iOS Simulator,name=iPhone 15' build`
-- Run tests: `xcodebuild test -workspace Sizify.xcworkspace -scheme Sizify -destination 'platform=iOS Simulator,name=iPhone 15'`
+- Open in Xcode: `open Sizeify.xcworkspace`
+- Build from CLI: `xcodebuild -workspace Sizeify.xcworkspace -scheme Sizeify -destination 'platform=iOS Simulator,name=iPhone 15' build`
+- Run tests: `xcodebuild test -workspace Sizeify.xcworkspace -scheme Sizeify -destination 'platform=iOS Simulator,name=iPhone 15'`
 - Format: `swift format -i -r Sources/`
 - Lint: `swiftlint`
 

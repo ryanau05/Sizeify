@@ -1,4 +1,4 @@
-# Sizify v1 — File Structure
+# Sizeify v1 — File Structure
 
 This is the canonical repo layout. It mirrors the four-component architecture (mobile clients, backend API, scrapers, LLM extraction) plus shared infrastructure and docs. Each top-level folder owns exactly one of those concerns; nothing crosses without an explicit interface.
 
@@ -9,7 +9,7 @@ The tree below is annotated. Read the annotation under each folder as the contra
 ## Top-level layout
 
 ```
-sizify/
+sizeify/
 ├── apps/                        # Independently deployable units
 │   ├── api/                     # FastAPI backend (Python 3.12, uv)
 │   ├── ios/                     # Native iOS app (SwiftUI)
@@ -21,7 +21,7 @@ sizify/
 │   └── k8s/                     # Manifests for API + worker (deferred)
 │
 ├── docs/                        # Specs, plans, and decision records
-│   ├── Sizify_PRD_v1.docx # Authoritative product spec
+│   ├── Sizeify_PRD_v1.docx # Authoritative product spec
 │   ├── PROJECT_PLAN.md          # Phased implementation plan
 │   ├── FILE_STRUCTURE.md        # This file
 │   ├── adr/                     # Architecture Decision Records (one .md per decision)
@@ -201,14 +201,14 @@ A few things to call out:
 
 ```
 apps/ios/
-├── Sizify.xcworkspace
-├── Sizify.xcodeproj
+├── Sizeify.xcworkspace
+├── Sizeify.xcodeproj
 ├── Package.swift                # SwiftPM dependencies (Alamofire or URLSession-only,
 │                                #   KeychainAccess, swift-dependencies, etc.)
 ├── README.md
 │
-├── Sizify/                # Main app target
-│   ├── SizifyApp.swift
+├── Sizeify/                # Main app target
+│   ├── SizeifyApp.swift
 │   ├── Info.plist
 │   ├── Assets.xcassets
 │   ├── Resources/
@@ -247,21 +247,21 @@ apps/ios/
 │       ├── Logger.swift
 │       └── FeatureFlags.swift
 │
-├── SizifyShareExtension/  # Extension target (Phase 6)
+├── SizeifyShareExtension/  # Extension target (Phase 6)
 │   ├── ShareViewController.swift  # Minimal: read URL, POST /recommend, exit
 │   ├── Info.plist               # NSExtension config + App Group entitlement
 │   └── SharedSecrets.swift      # Reads JWT from shared Keychain group
 │
-├── SizifyNotificationServiceExtension/   # Rich notifications target
+├── SizeifyNotificationServiceExtension/   # Rich notifications target
 │   ├── NotificationService.swift  # Downloads product image, attaches to payload
 │   └── Info.plist
 │
-├── SizifyTests/           # Unit tests (XCTest)
+├── SizeifyTests/           # Unit tests (XCTest)
 │   ├── NetworkingTests/
 │   ├── UnitsTests/
 │   └── DTOMappingTests/
 │
-└── SizifyUITests/         # Onboarding happy path, share-flow integration test
+└── SizeifyUITests/         # Onboarding happy path, share-flow integration test
 ```
 
 iOS-specific reminders:
@@ -286,8 +286,8 @@ apps/android/
 │   ├── build.gradle.kts
 │   ├── src/main/
 │   │   ├── AndroidManifest.xml
-│   │   ├── kotlin/com/sizify/app/
-│   │   │   ├── SizifyApp.kt   # Application class; Hilt entry point
+│   │   ├── kotlin/com/sizeify/app/
+│   │   │   ├── SizeifyApp.kt   # Application class; Hilt entry point
 │   │   │   ├── MainActivity.kt
 │   │   │   ├── ShareReceiverActivity.kt   # ACTION_SEND text/plain handler
 │   │   │   │
@@ -324,12 +324,12 @@ apps/android/
 │   │       └── mipmap-*/           # Launcher icons
 │   │
 │   ├── src/test/                   # JVM unit tests
-│   │   └── kotlin/com/sizify/app/
+│   │   └── kotlin/com/sizeify/app/
 │   │       ├── core/
 │   │       └── features/
 │   │
 │   └── src/androidTest/            # Instrumented tests
-│       └── kotlin/com/sizify/app/
+│       └── kotlin/com/sizeify/app/
 │           └── share/              # ShareReceiverActivity flow test
 │
 └── notification-service/           # FCM background work, separate module
@@ -368,7 +368,7 @@ Local dev only needs `docker compose up -d` to bring up Postgres + Redis. Terraf
 
 ```
 docs/
-├── Sizify_PRD_v1.docx     # Authoritative spec (source of truth)
+├── Sizeify_PRD_v1.docx     # Authoritative spec (source of truth)
 ├── PROJECT_PLAN.md              # The phased plan
 ├── FILE_STRUCTURE.md            # This document
 │

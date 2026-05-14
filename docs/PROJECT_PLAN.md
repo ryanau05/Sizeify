@@ -1,6 +1,6 @@
-# Sizify v1 — Project Plan
+# Sizeify v1 — Project Plan
 
-This document is the implementation playbook for Sizify v1. It translates the PRD into a phased build plan with concrete deliverables, owners, sequencing, and decision points. Read it alongside `Sizify_PRD_v1.docx` (authoritative spec) and `FILE_STRUCTURE.md` (repo layout).
+This document is the implementation playbook for Sizeify v1. It translates the PRD into a phased build plan with concrete deliverables, owners, sequencing, and decision points. Read it alongside `Sizeify_PRD_v1.docx` (authoritative spec) and `FILE_STRUCTURE.md` (repo layout).
 
 The PRD's scope discipline is unusual and load-bearing: men's button-down shirts only, ten partner brands, single-user. Every section below assumes those constraints. If a piece of work in here implies something broader, treat that as a bug in the plan, not a feature.
 
@@ -177,7 +177,7 @@ Deliverables:
 - Push dispatch on the backend: APNs (token auth) and FCM. Push payload conforms to PRD §7.4 (size + confidence in title, brand + product in subtitle, one-line summary in body, two deep-link actions).
 - End-to-end latency tests in CI: a synthetic share flow against a staging backend with fixture brands, asserting p50 < 3s.
 
-Exit criterion: a real device on either platform, sharing a real product URL from Mobile Safari / Chrome to Sizify, receives a rich notification with the right size in under 3 seconds.
+Exit criterion: a real device on either platform, sharing a real product URL from Mobile Safari / Chrome to Sizeify, receives a rich notification with the right size in under 3 seconds.
 
 ### Phase 7 — Outcome tracking and learning loop (week 9)
 
@@ -288,5 +288,5 @@ v1 is "done" when every item below is true. Anything weaker means we shipped som
 ## 8. What to read next
 
 - `FILE_STRUCTURE.md` — directory layout and per-folder responsibilities for the four components.
-- `docs/Sizify_PRD_v1.docx` — the PRD itself. The Glossary in Appendix B is short; learn it.
+- `docs/Sizeify_PRD_v1.docx` — the PRD itself. The Glossary in Appendix B is short; learn it.
 - `CLAUDE.md` — the conventions that override defaults. In particular, the v1 scope rules, the privacy rules, and the gotchas.

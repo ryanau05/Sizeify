@@ -1,4 +1,4 @@
-# Sizify
+# Sizeify
 
 Mobile app that recommends what size to buy in any clothing brand based on garments the user already owns. v1 covers men's button-down shirts across 10 partner brands.
 
@@ -25,7 +25,7 @@ After bootstrap, common tasks are wired into the [Makefile](Makefile): `make dev
 
 ## Documentation
 
-- [Sizify_PRD_v1.docx](docs/Sizify_PRD_v1.docx) — authoritative product spec
+- [Sizeify_PRD_v1.docx](docs/Sizeify_PRD_v1.docx) — authoritative product spec
 - [PROJECT_PLAN.md](docs/PROJECT_PLAN.md) — phased implementation plan
 - [FILE_STRUCTURE.md](docs/FILE_STRUCTURE.md) — canonical repo layout
 - [CLAUDE.md](CLAUDE.md) — repo-wide conventions
