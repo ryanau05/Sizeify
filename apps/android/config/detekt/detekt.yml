@@ -1,0 +1,12 @@
+# Detekt config for the Sizeify Android app.
+#
+# `buildUponDefaultConfig = true` in app/build.gradle.kts means this file only
+# needs to declare overrides — every rule we don't mention keeps its default
+# setting. Most defaults are sensible; the entries below are exceptions we hit
+# in idiomatic Jetpack Compose code.
+
+naming:
+  FunctionNaming:
+    # Composable functions are conventionally PascalCase (per the Jetpack
+    # Compose API guidelines). Same goes for @Preview helpers.
+    ignoreAnnotated: ['Composable', 'Preview']
