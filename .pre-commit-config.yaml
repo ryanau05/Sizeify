@@ -1,0 +1,49 @@
+# Repo-wide pre-commit hooks. Install with `pre-commit install`.
+# Run on demand with `pre-commit run --all-files`.
+
+default_install_hook_types: [pre-commit]
+default_stages: [pre-commit]
+
+repos:
+  # ---------------------------------------------------------------------------
+  # Generic whitespace / newline hygiene (all files).
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        # Don't strip Markdown two-space hard line breaks.
+        args: [--markdown-linebreak-ext=md]
+
+  # ---------------------------------------------------------------------------
+  # Python: ruff lint + format, scoped to the backend.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff
+        files: ^apps/api/
+        args: [--fix]
+      - id: ruff-format
+        files: ^apps/api/
+
+  # ---------------------------------------------------------------------------
+  # Native toolchains (ktlint, swift-format) — run via system binaries.
+  # Install instructions live in README.md.
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: ktlint
+        name: ktlint (Android)
+        language: system
+        files: ^apps/android/.*\.(kt|kts)$
+        entry: ktlint --relative
+        pass_filenames: true
+
+      - id: swift-format
+        name: swift format lint (iOS)
+        language: system
+        files: ^apps/ios/.*\.swift$
+        entry: swift format lint
+        pass_filenames: true

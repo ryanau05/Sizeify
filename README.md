@@ -23,6 +23,26 @@ It installs `uv`, syncs backend deps, sets up pre-commit hooks, and runs databas
 
 After bootstrap, common tasks are wired into the [Makefile](Makefile): `make dev`, `make lint`, `make test`, `make db-reset`.
 
+## Pre-commit hooks
+
+Lint and format hooks live in [.pre-commit-config.yaml](.pre-commit-config.yaml): ruff + ruff-format on `apps/api/`, ktlint on `apps/android/`, swift-format on `apps/ios/`, plus `end-of-file-fixer` and `trailing-whitespace` repo-wide.
+
+Required host tools (install once):
+
+```bash
+brew install pre-commit ktlint swiftlint  # ruff comes in via the pre-commit env
+# swift-format is bundled with the Swift toolchain shipped in Xcode 26 — no install
+```
+
+Then wire the git hook:
+
+```bash
+pre-commit install        # installs the hook into .git/hooks/pre-commit
+pre-commit run --all-files
+```
+
+The `--all-files` run should exit 0 immediately after `pre-commit install` on a fresh clone.
+
 ## Documentation
 
 - [Sizeify_PRD_v1.docx](docs/Sizeify_PRD_v1.docx) — authoritative product spec
