@@ -1,0 +1,78 @@
+name: backend
+
+# Trigger on changes to the FastAPI app or to this workflow file.
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/api/**
+      - .github/workflows/backend.yml
+  pull_request:
+    paths:
+      - apps/api/**
+      - .github/workflows/backend.yml
+
+# Cancel in-progress runs of the same ref to keep CI cheap.
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: lint + type + test
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: apps/api
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: sizeify
+          POSTGRES_USER: sizeify
+          POSTGRES_PASSWORD: sizeify
+        ports:
+          - 5432:5432
+        # Health-check so dependent steps wait for the DB to be ready.
+        options: >-
+          --health-cmd "pg_isready -U sizeify -d sizeify"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Points pytest / alembic at the postgres service container.
+      DATABASE_URL: postgresql+asyncpg://sizeify:sizeify@localhost:5432/sizeify
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Ruff lint
+        run: uv run ruff check
+
+      - name: Ruff format check
+        run: uv run ruff format --check
+
+      - name: Mypy
+        run: uv run mypy src
+
+      - name: Pytest
+        run: uv run pytest
