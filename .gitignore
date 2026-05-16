@@ -1,6 +1,9 @@
 .DS_Store
 .Rhistory
 
+# Local env overrides (compose, etc.)
+infra/.env
+
 # Python
 __pycache__/
 *.py[cod]
