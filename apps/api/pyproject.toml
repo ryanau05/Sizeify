@@ -59,3 +59,7 @@ files = ["src/api"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Put the src/ layout on sys.path directly. We do not rely on the editable
+# install's .pth for module resolution because uv's editable .pth is not
+# reliably honored in this venv; this makes `uv run pytest` deterministic.
+pythonpath = ["src"]
