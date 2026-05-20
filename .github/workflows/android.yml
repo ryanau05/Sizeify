@@ -1,0 +1,87 @@
+name: android
+
+# Runs on every push to main and every PR. Path filtering is per-job so the
+# always-running `gate` job can serve as a stable required status check even on
+# PRs that don't touch the Android app.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: detect changes (android)
+    runs-on: ubuntu-latest
+    outputs:
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Filter paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            android:
+              - 'apps/android/**'
+              - '.github/workflows/android.yml'
+
+  build:
+    name: assemble + lint + test
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: apps/android
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # JDK 17 — JAVA_HOME from setup-java satisfies the daemon toolchain
+      # criteria pinned in gradle/gradle-daemon-jvm.properties (toolchainVersion=17).
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Configures Gradle and caches the distribution + ~/.gradle between runs.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble, lint, test
+        run: ./gradlew assembleDebug ktlintCheck detekt test
+
+  # Always-running aggregate. This is the required status check on main: it
+  # passes when the Android app is unchanged (build skipped) and fails if the
+  # build job failed or was cancelled.
+  gate:
+    name: android gate
+    needs: [changes, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify upstream results
+        run: |
+          changes_result="${{ needs.changes.result }}"
+          build_result="${{ needs.build.result }}"
+          echo "changes: $changes_result | build: $build_result"
+          if [ "$changes_result" != "success" ]; then
+            echo "::error::path-detection job did not succeed"
+            exit 1
+          fi
+          if [ "$build_result" = "failure" ] || [ "$build_result" = "cancelled" ]; then
+            echo "::error::Android build job failed"
+            exit 1
+          fi
+          echo "android gate passed"
