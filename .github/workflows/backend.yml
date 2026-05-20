@@ -1,18 +1,14 @@
 name: backend
 
-# Trigger on changes to the FastAPI app or to this workflow file.
+# Runs on every push to main and every PR. Path filtering is done per-job (see
+# the `changes` job) rather than on the trigger, so the always-running `gate`
+# job can serve as a stable required status check even on PRs that don't touch
+# the backend.
 on:
   push:
     branches: [main]
-    paths:
-      - apps/api/**
-      - .github/workflows/backend.yml
   pull_request:
-    paths:
-      - apps/api/**
-      - .github/workflows/backend.yml
 
-# Cancel in-progress runs of the same ref to keep CI cheap.
 concurrency:
   group: backend-${{ github.ref }}
   cancel-in-progress: true
@@ -21,8 +17,27 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: detect changes (backend)
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Filter paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'apps/api/**'
+              - '.github/workflows/backend.yml'
+
   test:
     name: lint + type + test
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
 
     defaults:
@@ -38,7 +53,6 @@ jobs:
           POSTGRES_PASSWORD: sizeify
         ports:
           - 5432:5432
-        # Health-check so dependent steps wait for the DB to be ready.
         options: >-
           --health-cmd "pg_isready -U sizeify -d sizeify"
           --health-interval 5s
@@ -46,7 +60,6 @@ jobs:
           --health-retries 10
 
     env:
-      # Points pytest / alembic at the postgres service container.
       DATABASE_URL: postgresql+asyncpg://sizeify:sizeify@localhost:5432/sizeify
 
     steps:
@@ -76,3 +89,27 @@ jobs:
 
       - name: Pytest
         run: uv run pytest
+
+  # Always-running aggregate. This is the required status check on main: it
+  # passes when the backend is unchanged (test skipped) and fails if the test
+  # job failed or was cancelled.
+  gate:
+    name: backend gate
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify upstream results
+        run: |
+          changes_result="${{ needs.changes.result }}"
+          test_result="${{ needs.test.result }}"
+          echo "changes: $changes_result | test: $test_result"
+          if [ "$changes_result" != "success" ]; then
+            echo "::error::path-detection job did not succeed"
+            exit 1
+          fi
+          if [ "$test_result" = "failure" ] || [ "$test_result" = "cancelled" ]; then
+            echo "::error::backend test job failed"
+            exit 1
+          fi
+          echo "backend gate passed"

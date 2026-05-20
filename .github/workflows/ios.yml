@@ -1,16 +1,12 @@
 name: ios
 
-# Trigger on changes to the iOS app or to this workflow file.
+# Runs on every push to main and every PR. Path filtering is per-job so the
+# always-running `gate` job can serve as a stable required status check even on
+# PRs that don't touch the iOS app.
 on:
   push:
     branches: [main]
-    paths:
-      - apps/ios/**
-      - .github/workflows/ios.yml
   pull_request:
-    paths:
-      - apps/ios/**
-      - .github/workflows/ios.yml
 
 concurrency:
   group: ios-${{ github.ref }}
@@ -20,8 +16,27 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: detect changes (ios)
+    runs-on: ubuntu-latest
+    outputs:
+      ios: ${{ steps.filter.outputs.ios }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Filter paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ios:
+              - 'apps/ios/**'
+              - '.github/workflows/ios.yml'
+
   build:
     name: build (iPhone 15 sim)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     runs-on: macos-14
 
     defaults:
@@ -62,3 +77,27 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 15' \
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
+
+  # Always-running aggregate. This is the required status check on main: it
+  # passes when the iOS app is unchanged (build skipped) and fails if the build
+  # job failed or was cancelled.
+  gate:
+    name: ios gate
+    needs: [changes, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify upstream results
+        run: |
+          changes_result="${{ needs.changes.result }}"
+          build_result="${{ needs.build.result }}"
+          echo "changes: $changes_result | build: $build_result"
+          if [ "$changes_result" != "success" ]; then
+            echo "::error::path-detection job did not succeed"
+            exit 1
+          fi
+          if [ "$build_result" = "failure" ] || [ "$build_result" = "cancelled" ]; then
+            echo "::error::iOS build job failed"
+            exit 1
+          fi
+          echo "ios gate passed"
