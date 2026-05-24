@@ -82,6 +82,23 @@ else
   MISSING=1
 fi
 
+# Android SDK — Gradle resolves it from ANDROID_HOME / ANDROID_SDK_ROOT or from
+# apps/android/local.properties (sdk.dir=...). local.properties is gitignored
+# and machine-specific, so a fresh clone has neither until the SDK is set up.
+android_sdk_dir() {
+  if [[ -n "${ANDROID_HOME:-}" ]]; then printf '%s' "$ANDROID_HOME"; return; fi
+  if [[ -n "${ANDROID_SDK_ROOT:-}" ]]; then printf '%s' "$ANDROID_SDK_ROOT"; return; fi
+  local lp="apps/android/local.properties"
+  [[ -f "$lp" ]] && sed -n 's/^sdk\.dir=//p' "$lp" | head -1
+}
+ANDROID_SDK_DIR="$(android_sdk_dir)"
+if [[ -n "$ANDROID_SDK_DIR" && -d "$ANDROID_SDK_DIR" ]]; then
+  ok "Android SDK found ($ANDROID_SDK_DIR)"
+else
+  warn "Android SDK NOT found — install it (Android Studio, or 'brew install --cask android-commandlinetools') then set ANDROID_HOME or add 'sdk.dir=<path>' to apps/android/local.properties"
+  MISSING=1
+fi
+
 # Verify the Docker daemon is actually reachable (not just the CLI present).
 if command -v docker >/dev/null 2>&1; then
   if docker info >/dev/null 2>&1; then

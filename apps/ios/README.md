@@ -15,6 +15,8 @@ xcodebuild -workspace Sizeify.xcworkspace -scheme Sizeify \
   -destination 'platform=iOS Simulator,name=iPhone 16' build
 ```
 
+The `iPhone 16` simulator name is intentional — CI uses `iPhone 15` to match the PRD spec, but the local Xcode 26.2 install doesn't ship iPhone 15 in its default device set. See [ADR-0001](../../docs/adr/0001-phase-0-foundation.md) §6 ("Notable decisions").
+
 The deployment target is iOS 17; bundle ID is `com.sizeify.app`; signing is set to Automatic with no team configured (simulator builds use ad-hoc signing).
 
 ## Tests

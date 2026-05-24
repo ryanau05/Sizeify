@@ -15,6 +15,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read  # dorny/paths-filter lists changed files via the PR API
 
 jobs:
   changes:
