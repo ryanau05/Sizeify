@@ -103,7 +103,7 @@ Deliverables:
   - `POST /closet/garments/{id}/fit-signals` (manual entry path for v1)
   - `GET /closet/fit-profile` (returns the constructed fit profile for the user)
 - Fit-profile construction (PRD §6.2) implemented as a pure function over a closet snapshot. Bayesian update with weak prior, owned-garment evidence, use-case conditioning. Unit tests with crafted closets covering: empty closet, single love-rated garment, contradictory signals, use-case-specific signals.
-- Matching engine (PRD §6.4) implemented as a pure function over (fit profile, brand_product). Stretch adjustment (PRD §6.3) using v1's hand-tuned coefficients in `apps/api/src/api/domain/stretch_coefficients.py`. Unit tests covering: in-range fit, weighted distance ranking, confidence < 60% returning two candidates per PRD §5.4, gap-to-second-best driving confidence.
+- Matching engine (PRD §6.4) implemented as a pure function over (fit profile, brand_product). Stretch adjustment (PRD §6.3) using v1's hand-tuned coefficients in `apps/api/src/api/domain/stretch.py`. Unit tests covering: in-range fit, weighted distance ranking, confidence < 60% returning two candidates per PRD §5.4, gap-to-second-best driving confidence.
 - GDPR/CCPA endpoints from day one (PRD §11): `GET /me/export` (full data dump as JSON), `DELETE /me` (cascade delete), consent flag on signup.
 
 Exit criterion: integration test seeds a closet with five garments, calls the matching engine with a fixture `brand_product`, asserts the recommendation matches a hand-computed expectation including all four mandatory components.

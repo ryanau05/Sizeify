@@ -54,6 +54,9 @@ jobs:
         uses: maxim-lobanov/setup-xcode@v1
         with:
           # Xcode 15.x ships the iPhone 15 simulator in its default device set.
+          # iPhone 15 here is intentional — local dev uses iPhone 16 because
+          # the local Xcode 26.2 install doesn't ship iPhone 15. See
+          # docs/adr/0001-phase-0-foundation.md §6 ("Notable decisions").
           xcode-version: "15.4"
 
       - name: Show toolchain + destinations

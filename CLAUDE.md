@@ -4,6 +4,10 @@ Mobile app that recommends what size to buy in any clothing brand based on garme
 
 **Authoritative spec:** `docs/Sizeify_PRD_v1.docx`. When in doubt about requirements, read the PRD before guessing. The Glossary (Appendix B) defines domain terms — use them consistently.
 
+**Project plan and current status:** `docs/PROJECT_PLAN.md` is the phased build plan (Phase 0 → 9). `docs/PHASE_1_TICKETS.md` breaks the active phase into tickets. Read these before proposing work — they tell you what's done, what's in flight, and what's deferred. The PRD says *what* to build; the plan says *where we are* in building it.
+
+**Current status (as of 2026-05-23):** Phase 0 (Foundation) is complete, and the repo is now **private** (GitHub Pro) with branch protection intact — the earlier privacy blocker is resolved. Phase 1 (Backend core: schema, auth, closet CRUD) is **unblocked and ready to start**; see `docs/PHASE_1_TICKETS.md` for the ticket breakdown. Keep this paragraph current — if the date here is more than a week old, treat the status as suspect and re-read `docs/PROJECT_PLAN.md` before acting on it.
+
 ## Architecture
 
 Four independently deployable components:
@@ -38,8 +42,8 @@ See PRD §8 (data model) and §9 (architecture) for details.
 ### iOS (`apps/ios`)
 
 - Open in Xcode: `open Sizeify.xcworkspace`
-- Build from CLI: `xcodebuild -workspace Sizeify.xcworkspace -scheme Sizeify -destination 'platform=iOS Simulator,name=iPhone 15' build`
-- Run tests: `xcodebuild test -workspace Sizeify.xcworkspace -scheme Sizeify -destination 'platform=iOS Simulator,name=iPhone 15'`
+- Build from CLI: `xcodebuild -workspace Sizeify.xcworkspace -scheme Sizeify -destination 'platform=iOS Simulator,name=iPhone 16' build`
+- Run tests: `xcodebuild test -workspace Sizeify.xcworkspace -scheme Sizeify -destination 'platform=iOS Simulator,name=iPhone 16'`
 - Format: `swift format -i -r Sources/`
 - Lint: `swiftlint`
 

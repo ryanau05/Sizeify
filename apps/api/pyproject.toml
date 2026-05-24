@@ -4,14 +4,16 @@ version = "0.1.0"
 description = "Sizeify backend API"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi[standard]",
-    "uvicorn[standard]",
-    "pydantic-settings",
-    "sqlalchemy[asyncio]",
-    "asyncpg",
-    "alembic",
-    "arq",
-    "anthropic",
+    # Pinned to the ADR 0001 Phase 0 baseline. Bumping any of these is a
+    # deliberate change (see docs/adr/0001-phase-0-foundation.md).
+    "fastapi[standard]==0.136.1",
+    "uvicorn[standard]==0.46.0",
+    "pydantic-settings==2.14.1",
+    "sqlalchemy[asyncio]==2.0.49",
+    "asyncpg==0.31.0",
+    "alembic==1.18.4",
+    "arq==0.28.0",
+    "anthropic==0.102.0",
 ]
 
 [build-system]

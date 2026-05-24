@@ -97,9 +97,17 @@ workflows are green.
    reports on unrelated PRs. Required checks on `main`: `backend gate`,
    `ios gate`, `android gate` (strict / branch-up-to-date).
 
-5. **Repository is public.** Branch protection / rulesets are gated behind
-   GitHub Pro on private repos; making the repo public enables enforced
-   required checks on the free tier.
+5. **Repository is private, on GitHub Pro.** Branch protection / rulesets with
+   required status checks are gated behind a paid tier (Pro/Team/Enterprise) on
+   private repos; on the free tier they work only on public repos. The repo was
+   briefly public during early Phase 0 to get enforced gates for free, then
+   moved to private under GitHub Pro once the proprietary code (scraper modules,
+   stretch coefficients, prompt templates) warranted it — Pro preserves the same
+   enforced required checks on `main`. Trade-off: private repos meter GitHub
+   Actions minutes (Pro: 3,000/mo; macOS runners bill at 10×), whereas public
+   repos get unlimited standard-runner minutes. The gate pattern (item 4) keeps
+   the expensive macOS iOS build off PRs that don't touch `apps/ios/**`, so the
+   quota is ample for solo development.
 
 6. **iPhone 15 in CI, iPhone 16 locally.** macos-14 + Xcode 15.4 provides the
    iPhone 15 simulator (matching spec). The local dev machine runs Xcode 26.2,
@@ -112,10 +120,14 @@ workflows are green.
   deliberate change, ideally noted in a follow-up ADR when it has
   cross-component impact.
 - New contributors need these host tools present before `make bootstrap`: uv,
-  a running Docker daemon, Xcode CLI tools, and JDK 17. `scripts/bootstrap.sh`
-  checks for them and fails fast with install hints.
-- **Known gap:** `scripts/bootstrap.sh` does not yet check for the Android SDK
-  / `ANDROID_HOME`; a fresh clone needs `local.properties` or `ANDROID_HOME`
-  set before the Android build works. Candidate for a follow-up.
+  a running Docker daemon, Xcode CLI tools, JDK 17, and the Android SDK.
+  `scripts/bootstrap.sh` checks for all of them and fails fast with install
+  hints. The Android SDK check resolves the SDK from `ANDROID_HOME` /
+  `ANDROID_SDK_ROOT` or `apps/android/local.properties` (`sdk.dir=`), since
+  `local.properties` is gitignored and absent on a fresh clone.
+- Branch protection is enforced on `main`: the three gate checks (`backend
+  gate`, `ios gate`, `android gate`) are required and strict (branch must be
+  up to date); force-pushes and deletions are blocked. `enforce_admins` is
+  off so the solo maintainer is not locked out.
 - **Tech debt:** several GitHub Actions still run on Node 20 (deprecation
   deadline mid-2026) — a version bump pass is queued for a later phase.
