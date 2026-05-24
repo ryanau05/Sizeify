@@ -7,6 +7,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from api.config import get_settings
+from api.models import Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -21,11 +22,9 @@ if config.config_file_name is not None:
 # resolution order as the running app (process env > .env > default).
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
-target_metadata = None
+# Autogenerate diffs against this metadata. Entity modules register their
+# tables on Base.metadata via api.models (imported above).
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
