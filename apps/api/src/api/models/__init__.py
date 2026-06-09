@@ -12,5 +12,22 @@ class Base(DeclarativeBase):
 
 
 # Import every entity module here so its table registers on Base.metadata
-# before Alembic reads target_metadata. Entities land in TKT-P1-01.
-__all__ = ["Base"]
+# before Alembic reads target_metadata. New entities must be added below.
+from api.models.brand_product import BrandProduct  # noqa: E402
+from api.models.fit_signal import FitSignal  # noqa: E402
+from api.models.garment_category import GarmentCategory  # noqa: E402
+from api.models.owned_garment import OwnedGarment  # noqa: E402
+from api.models.recommendation import Recommendation  # noqa: E402
+from api.models.refresh_token import RefreshToken  # noqa: E402
+from api.models.user import User  # noqa: E402
+
+__all__ = [
+    "Base",
+    "BrandProduct",
+    "FitSignal",
+    "GarmentCategory",
+    "OwnedGarment",
+    "Recommendation",
+    "RefreshToken",
+    "User",
+]
