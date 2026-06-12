@@ -1,0 +1,58 @@
+{
+  "user_email": "demo@sizeify.app",
+  "category_slug": "mens_button_down_shirt",
+  "garments": [
+    {
+      "label": "J.Crew Bowery — size M (everyday favourite)",
+      "brand": "jcrew",
+      "size_label": "M",
+      "stretch_level": "slight",
+      "measurements_cm": {"neck": 39.5, "chest": 107, "shoulder": 46, "sleeve": 86, "body_length": 80},
+      "signals": [
+        {"dimension": "chest", "verdict": "preferred", "source": "user_added", "raw_feedback_text": "User-added: chest fits great"},
+        {"dimension": "neck", "verdict": "preferred", "source": "user_added", "raw_feedback_text": "User-added: collar comfortable"}
+      ]
+    },
+    {
+      "label": "Uniqlo Easy Care — size M (preferred)",
+      "brand": "uniqlo",
+      "size_label": "M",
+      "stretch_level": "moderate",
+      "measurements_cm": {"neck": 40, "chest": 105, "shoulder": 45, "sleeve": 85, "body_length": 78},
+      "signals": [
+        {"dimension": "chest", "verdict": "preferred", "source": "user_added", "raw_feedback_text": "User-added: ideal everyday fit"}
+      ]
+    },
+    {
+      "label": "Banana Republic slim — size M (chest slightly tight)",
+      "brand": "banana_republic",
+      "size_label": "M",
+      "stretch_level": "none",
+      "measurements_cm": {"neck": 40, "chest": 103, "shoulder": 45, "sleeve": 86, "body_length": 79},
+      "signals": [
+        {"dimension": "chest", "verdict": "slightly_tight", "source": "user_added", "raw_feedback_text": "User-added: a bit snug across the chest"}
+      ]
+    },
+    {
+      "label": "Everlane oxford — size L (body slightly loose)",
+      "brand": "everlane",
+      "size_label": "L",
+      "stretch_level": "none",
+      "measurements_cm": {"neck": 41, "chest": 110, "shoulder": 47, "sleeve": 88, "body_length": 83},
+      "signals": [
+        {"dimension": "body_length", "verdict": "slightly_loose", "source": "user_added", "raw_feedback_text": "User-added: a little long/boxy in the body"}
+      ]
+    },
+    {
+      "label": "Bonobos gym/athletic — size M (use_case=gym)",
+      "brand": "bonobos",
+      "size_label": "M",
+      "stretch_level": "high",
+      "use_case": "gym",
+      "measurements_cm": {"neck": 40, "chest": 106, "shoulder": 45, "sleeve": 85, "body_length": 79},
+      "signals": [
+        {"dimension": "chest", "verdict": "preferred", "use_case": "gym", "source": "user_added", "raw_feedback_text": "User-added: great range of motion for workouts"}
+      ]
+    }
+  ]
+}

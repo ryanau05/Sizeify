@@ -1,0 +1,65 @@
+/* Minimal demo styling. Not a design system — just enough to present well. */
+:root {
+  --bg: #0f1115;
+  --card: #1a1d24;
+  --ink: #e8eaed;
+  --muted: #9aa0aa;
+  --accent: #5b8cff;
+  --good: #3ecf8e;
+  --warn: #ffb454;
+  --line: #2a2e37;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+.app { max-width: 720px; margin: 0 auto; padding: 24px; }
+.app__header { display: flex; justify-content: space-between; align-items: center; }
+.app__header h1 { font-size: 22px; margin: 0; }
+.app__tabs button { background: none; border: 0; color: var(--muted);
+  font-size: 15px; padding: 8px 10px; cursor: pointer; }
+.app__tabs .is-active { color: var(--ink); border-bottom: 2px solid var(--accent); }
+.app__main { margin-top: 24px; }
+
+.paste__lede, .closet__head h2, .add h2 { color: var(--ink); }
+.paste__form { display: flex; gap: 8px; margin: 16px 0; }
+.paste__form input, .add textarea, .measure__row input {
+  background: var(--card); border: 1px solid var(--line); color: var(--ink);
+  border-radius: 8px; padding: 10px; }
+.paste__form input { flex: 1; }
+button { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+  padding: 10px 14px; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: default; }
+button.ghost { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+
+.rec { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 18px; margin-top: 16px; }
+.rec__head { display: flex; justify-content: space-between; align-items: flex-start; }
+.rec__brand { color: var(--muted); font-size: 13px; text-transform: uppercase; }
+.rec__product { font-weight: 600; }
+.rec__confidence { color: var(--good); font-weight: 600; }
+.rec__confidence.is-low { color: var(--warn); }
+.rec__sizes { display: flex; gap: 16px; margin: 16px 0; }
+.rec__size-label { font-size: 28px; font-weight: 700; }
+.rec__size--alt { opacity: 0.8; }
+.rec__notes { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
+.rec__refs { border-top: 1px solid var(--line); padding-top: 12px; }
+.rec__refs-title { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+
+.closet__head { display: flex; justify-content: space-between; align-items: center; }
+.closet__list { list-style: none; padding: 0; }
+.closet__item { background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px; margin-bottom: 8px; }
+.closet__item-meta { color: var(--muted); font-size: 13px; }
+
+.measure__row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.measure__row input.is-invalid { border-color: var(--warn); }
+.measure__hint { color: var(--warn); font-size: 12px; }
+.add__feedback { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; }
+.add textarea { min-height: 70px; }
+.add__actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+.chips__list { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0; }
+.chip { padding: 4px 10px; border-radius: 999px; font-size: 13px; background: var(--line); }
+.chip--preferred { background: rgba(62,207,142,0.2); color: var(--good); }
+
+.error { color: #ff6b6b; }

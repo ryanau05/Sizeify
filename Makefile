@@ -1,6 +1,7 @@
 .PHONY: bootstrap dev lint test db-reset \
         lint-api lint-android lint-ios \
-        test-api test-android test-ios
+        test-api test-android test-ios \
+        demo demo-api demo-web demo-seed
 
 COMPOSE_FILE := infra/docker-compose.yml
 
@@ -51,3 +52,24 @@ db-reset:
 	docker compose -f $(COMPOSE_FILE) down -v
 	docker compose -f $(COMPOSE_FILE) up -d
 	cd apps/api && uv run alembic upgrade head
+
+# ---------------------------------------------------------------------------
+# DEMO (capstone, throwaway) — additive targets, isolated from production.
+# Everything below depends only on apps/web + apps/api/src/api/demo/* and is
+# safe to delete with `rm -rf apps/web apps/api/src/api/demo` after the demo.
+# ---------------------------------------------------------------------------
+# One-command: infra up, migrate, seed, print next steps.
+demo:
+	./scripts/demo.sh
+
+# Backend demo app (separate ASGI entrypoint; production stays api.main:app).
+demo-api:
+	cd apps/api && DEMO_MODE=1 uv run uvicorn api.demo.app:app --reload --port 8000
+
+# Web demo client (Vite dev server on :5173).
+demo-web:
+	cd apps/web && npm run dev
+
+# (Re)seed the demo user, closet, and brand products.
+demo-seed:
+	cd apps/api && DEMO_MODE=1 uv run python -m api.demo.seed_demo

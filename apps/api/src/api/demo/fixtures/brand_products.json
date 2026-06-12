@@ -1,0 +1,37 @@
+[
+  {
+    "brand": "jcrew",
+    "product_name": "Bowery Wrinkle-Free Dress Shirt",
+    "url": "https://www.jcrew.com/p/bowery-dress-shirt",
+    "scraper_version": "demo-v0",
+    "size_chart": {
+      "S":  {"neck_cm": 37.5, "chest_cm": 102, "shoulder_cm": 44, "sleeve_cm": 84, "body_length_cm": 78},
+      "M":  {"neck_cm": 39.5, "chest_cm": 107, "shoulder_cm": 46, "sleeve_cm": 86, "body_length_cm": 80},
+      "L":  {"neck_cm": 41.5, "chest_cm": 112, "shoulder_cm": 48, "sleeve_cm": 88, "body_length_cm": 82},
+      "XL": {"neck_cm": 43.5, "chest_cm": 117, "shoulder_cm": 50, "sleeve_cm": 90, "body_length_cm": 84}
+    }
+  },
+  {
+    "brand": "uniqlo",
+    "product_name": "Easy Care Stretch Slim-Fit Shirt",
+    "url": "https://www.uniqlo.com/us/en/products/easy-care-stretch-slim",
+    "scraper_version": "demo-v0",
+    "size_chart": {
+      "S":  {"neck_cm": 38, "chest_cm": 100, "shoulder_cm": 43.5, "sleeve_cm": 83, "body_length_cm": 76},
+      "M":  {"neck_cm": 40, "chest_cm": 105, "shoulder_cm": 45,   "sleeve_cm": 85, "body_length_cm": 78},
+      "L":  {"neck_cm": 42, "chest_cm": 110, "shoulder_cm": 46.5, "sleeve_cm": 87, "body_length_cm": 80},
+      "XL": {"neck_cm": 44, "chest_cm": 116, "shoulder_cm": 48,   "sleeve_cm": 89, "body_length_cm": 82}
+    }
+  },
+  {
+    "brand": "proper_cloth",
+    "product_name": "Slim Stretch Poplin",
+    "url": "https://propercloth.com/dress-shirts/slim-stretch-poplin",
+    "scraper_version": "demo-v0",
+    "size_chart": {
+      "14.5/33": {"neck_cm": 37, "chest_cm": 99,  "shoulder_cm": 43, "sleeve_cm": 84, "body_length_cm": 77},
+      "15.5/34": {"neck_cm": 39, "chest_cm": 105, "shoulder_cm": 45, "sleeve_cm": 86, "body_length_cm": 79},
+      "16/35":   {"neck_cm": 41, "chest_cm": 110, "shoulder_cm": 47, "sleeve_cm": 88, "body_length_cm": 81}
+    }
+  }
+]
