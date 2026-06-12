@@ -29,3 +29,6 @@ captures/
 .cxx/
 app/release/
 **/build/
+
+# Local agent settings
+.claude/

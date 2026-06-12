@@ -92,6 +92,8 @@ Exit criterion: a fresh clone + `make bootstrap` (or equivalent) gets a contribu
 
 Goal: a backend that can store a user's closet and run the matching engine in isolation.
 
+> **Demo cross-reference:** the `demo/capstone` branch (`docs/DEMO_PLAN.md`, `docs/DEMO_TICKETS.md`) pulls the domain-core pieces of this phase forward as tickets DEMO-01–04, which map to TKT-P1-11/12/14/15 (`stretch`, `fit_profile`, `matching`, `recommendation`). Those are *real* Phase 1 deliverables — when the demo lands them, cherry-pick onto a Phase 1 PR branch rather than rebuilding. Everything else under `apps/api/src/api/demo/` and `apps/web/` is throwaway.
+
 Deliverables:
 - Alembic migration creating all six entities from PRD §8 plus `recommendation.prompt_version`. Indexes from §8.2.
 - Repository layer (`apps/api/src/api/repositories/`) wrapping every entity. No raw `AsyncSession` in route handlers — that boundary is in CLAUDE.md and it is load-bearing for tests.
