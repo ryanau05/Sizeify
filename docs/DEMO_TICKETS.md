@@ -26,10 +26,12 @@ the **Status** line on a ticket in the same commit that lands it.
 
 ## Progress tracker
 
-_Last updated: 2026-06-11. Day-1 engine complete: DEMO-01–04 (`stretch`, `fit_profile`,
-`matching`, `recommendation`) landed with unit tests and verified end-to-end on the real
-demo closet (jcrew Bowery → size M, confidence 0.73). Next: DEMO-05 seed, then the headline
-endpoint (07) and web wiring (09). Full `uv run pytest` pending a 3.12 toolchain._
+_Last updated: 2026-06-11. **Headline flow complete end-to-end.** Engine (DEMO-01–04) plus the
+glue: DEMO-05 seed, DEMO-07 `/demo/recommend-from-url`, and DEMO-09 web wiring. Verified on the
+real fixtures (jcrew → M 0.73, uniqlo → L 0.72, unknown brand → 422). Remaining: DEMO-08/10
+(add-garment), DEMO-11–13 (fixture tuning, polish, rehearsal). **Run locally with `make demo`;
+the DB-backed seed/endpoint couldn't be executed in the build sandbox (no Postgres / 3.12), so
+do a `make demo` smoke run before relying on it. Full `uv run pytest` also pending 3.12._
 
 | Ticket | Day | Type | Status |
 |---|---|---|---|
@@ -38,11 +40,11 @@ endpoint (07) and web wiring (09). Full `uv run pytest` pending a 3.12 toolchain
 | DEMO-02 — `domain/fit_profile.py` | 1 | KEEP | Done |
 | DEMO-03 — `domain/matching.py` | 1 | KEEP | Done |
 | DEMO-04 — `domain/recommendation.py` | 1 | KEEP | Done |
-| DEMO-05 — Implement `demo/seed_demo.py` | 1 | THROWAWAY | Not started |
+| DEMO-05 — Implement `demo/seed_demo.py` | 1 | THROWAWAY | Done |
 | DEMO-06 — Day-1 checkpoint: REPL recommendation | 1 | KEEP | Done (via script) |
-| DEMO-07 — `POST /demo/recommend-from-url` | 2 | THROWAWAY | Not started |
-| DEMO-08 — Closet read + add-garment endpoints | 2 | THROWAWAY | Not started |
-| DEMO-09 — Web: paste-URL flow live | 2 | THROWAWAY | Not started |
+| DEMO-07 — `POST /demo/recommend-from-url` | 2 | THROWAWAY | Done |
+| DEMO-08 — Closet read + add-garment endpoints | 2 | THROWAWAY | Partial (closet GET done; add-garment stubbed) |
+| DEMO-09 — Web: paste-URL flow live | 2 | THROWAWAY | Done (web already wired; needs .env) |
 | DEMO-10 — Web: closet + add-garment flow live | 2 | THROWAWAY | Not started |
 | DEMO-11 — Tune fixtures (confident + two-candidate) | 3 | THROWAWAY | Not started |
 | DEMO-12 — Web polish + pre-auth | 3 | THROWAWAY | Not started |
@@ -184,7 +186,10 @@ is TKT-P1-15 and is the piece the demo card renders.
 
 ### DEMO-05 — Implement `demo/seed_demo.py` [THROWAWAY]
 
-**Status:** Not started
+**Status:** Done — seeds category (reuses real seed), demo user, 5-garment closet + signals,
+and brand_product rows via the real repositories/models; normalizes fixture dim names to
+canonical (`demo/_normalize.py`); prints a pre-auth `VITE_DEMO_JWT`. Idempotent. Needs a live
+Postgres to run (`make demo-seed`) — not executed in the build sandbox.
 
 **Scope:** Make the seed runnable via the real repositories. Fixtures already exist
 (`demo/fixtures/{brand_products,demo_closet}.json`).
@@ -237,7 +242,10 @@ criterion (TKT-P1-19) done early.
 
 ### DEMO-07 — `POST /demo/recommend-from-url` (headline flow) [THROWAWAY]
 
-**Status:** Not started
+**Status:** Done — `demo/router.py`: `stub_scraper.resolve` → load demo closet → `build_fit_profile`
+→ `recommend` → persist (`prompt_version='demo-v0'`, best-effort) → return the §5.4 wire payload.
+Unknown brand → 422. Core path verified on fixtures; DB reads/writes need a live Postgres.
+Also implemented `GET /demo/closet` (DEMO-08 partial); add-garment still stubbed (501).
 
 **Scope:** Implement the headline handler in `demo/router.py`.
 
@@ -283,7 +291,9 @@ criterion (TKT-P1-19) done early.
 
 ### DEMO-09 — Web: paste-URL flow live [THROWAWAY]
 
-**Status:** Not started
+**Status:** Done — the web client was already wired (`api.recommendFromUrl` → `RecommendationCard`)
+and matches the endpoint's wire shape exactly, so no code change was needed. Remaining step is
+operational: copy `apps/web/.env.example` → `.env` and paste the `VITE_DEMO_JWT` the seed prints.
 
 **Scope:** Wire `PasteUrlPage` + `RecommendationCard` to the live endpoint and confirm
 the magic moment renders.
