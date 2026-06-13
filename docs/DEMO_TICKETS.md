@@ -26,18 +26,20 @@ the **Status** line on a ticket in the same commit that lands it.
 
 ## Progress tracker
 
-_Last updated: 2026-06-11. Engine build underway: DEMO-01 (`stretch.py`) landed with tests;
-the rest of the Day-1 engine (02–04), seed (05), and the headline endpoint/web (07/09) are next._
+_Last updated: 2026-06-11. Day-1 engine complete: DEMO-01–04 (`stretch`, `fit_profile`,
+`matching`, `recommendation`) landed with unit tests and verified end-to-end on the real
+demo closet (jcrew Bowery → size M, confidence 0.73). Next: DEMO-05 seed, then the headline
+endpoint (07) and web wiring (09). Full `uv run pytest` pending a 3.12 toolchain._
 
 | Ticket | Day | Type | Status |
 |---|---|---|---|
 | DEMO-00 — Backend boots, migrates, tests run | 0 | KEEP | Done |
 | DEMO-01 — `domain/stretch.py` | 1 | KEEP | Done |
-| DEMO-02 — `domain/fit_profile.py` | 1 | KEEP | Not started |
-| DEMO-03 — `domain/matching.py` | 1 | KEEP | Not started |
-| DEMO-04 — `domain/recommendation.py` | 1 | KEEP | Not started |
+| DEMO-02 — `domain/fit_profile.py` | 1 | KEEP | Done |
+| DEMO-03 — `domain/matching.py` | 1 | KEEP | Done |
+| DEMO-04 — `domain/recommendation.py` | 1 | KEEP | Done |
 | DEMO-05 — Implement `demo/seed_demo.py` | 1 | THROWAWAY | Not started |
-| DEMO-06 — Day-1 checkpoint: REPL recommendation | 1 | KEEP | Not started |
+| DEMO-06 — Day-1 checkpoint: REPL recommendation | 1 | KEEP | Done (via script) |
 | DEMO-07 — `POST /demo/recommend-from-url` | 2 | THROWAWAY | Not started |
 | DEMO-08 — Closet read + add-garment endpoints | 2 | THROWAWAY | Not started |
 | DEMO-09 — Web: paste-URL flow live | 2 | THROWAWAY | Not started |
@@ -107,7 +109,9 @@ forward — the matching engine needs it.
 
 ### DEMO-02 — `domain/fit_profile.py` [KEEP]
 
-**Status:** Not started
+**Status:** Done — `domain/fit_profile.py` + `tests/test_fit_profile.py`. Pure
+`build_fit_profile(ClosetSnapshot) -> FitProfile`, rating-weighted evidence with
+stretch + verdict shifts, `spread`/`maturity`, `to_response()` to `FitProfileResponse`.
 
 **Scope:** Pure fit-profile construction over a closet snapshot. This is TKT-P1-12,
 scoped to what the demo seed exercises (no use-case variants required for the headline
@@ -131,7 +135,9 @@ flow, but keep the field).
 
 ### DEMO-03 — `domain/matching.py` [KEEP]
 
-**Status:** Not started
+**Status:** Done — `domain/matching.py` + `tests/test_matching.py`. `match()` ranks sizes by
+weighted out-of-range distance (stretch-adjusted), `RankedSize` with per-dimension deltas,
+`MissingDimensionError` for incomplete charts.
 
 **Scope:** Pure matching engine over `(fit_profile, brand_product)`. This is TKT-P1-14.
 
@@ -151,7 +157,9 @@ flow, but keep the field).
 
 ### DEMO-04 — `domain/recommendation.py` (four §5.4 components) [KEEP]
 
-**Status:** Not started
+**Status:** Done — `domain/recommendation.py` + `tests/test_recommendation.py`. `recommend()`
+returns all four §5.4 components, confidence rule (<0.60 → two candidates, cold-start capped
+≤0.50), `to_wire()` matching `types.ts::Recommendation`.
 
 **Scope:** Wrap `match` with the confidence rule and assemble the recommendation. This
 is TKT-P1-15 and is the piece the demo card renders.
@@ -202,7 +210,10 @@ raw text mandatory).
 
 ### DEMO-06 — Day-1 checkpoint: REPL recommendation [KEEP]
 
-**Status:** Not started
+**Status:** Done (via script) — engine composed end-to-end on the real demo closet
+(jcrew Bowery → size M, confidence 0.73, four §5.4 components). A formal
+`tests/integration/test_demo_recommend.py` should be added once DEMO-05's seed lands so the
+checkpoint runs in CI from seeded DB state.
 
 **Scope:** Prove the engine end-to-end before any UI, equivalent to the Phase 1 exit
 criterion (TKT-P1-19) done early.
