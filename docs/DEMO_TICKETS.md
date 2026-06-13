@@ -26,13 +26,13 @@ the **Status** line on a ticket in the same commit that lands it.
 
 ## Progress tracker
 
-_Last updated: 2026-06-11. As of now the demo layer is scaffolding only — the structure
-in `DEMO_PLAN.md` §7 exists (uncommitted on `demo/capstone`) but no ticket is implemented._
+_Last updated: 2026-06-11. Engine build underway: DEMO-01 (`stretch.py`) landed with tests;
+the rest of the Day-1 engine (02–04), seed (05), and the headline endpoint/web (07/09) are next._
 
 | Ticket | Day | Type | Status |
 |---|---|---|---|
 | DEMO-00 — Backend boots, migrates, tests run | 0 | KEEP | Done |
-| DEMO-01 — `domain/stretch.py` | 1 | KEEP | Not started |
+| DEMO-01 — `domain/stretch.py` | 1 | KEEP | Done |
 | DEMO-02 — `domain/fit_profile.py` | 1 | KEEP | Not started |
 | DEMO-03 — `domain/matching.py` | 1 | KEEP | Not started |
 | DEMO-04 — `domain/recommendation.py` | 1 | KEEP | Not started |
@@ -83,7 +83,10 @@ re-do them if already merged — just verify.
 
 ### DEMO-01 — `domain/stretch.py` [KEEP]
 
-**Status:** Not started
+**Status:** Done — `domain/stretch.py` + `tests/test_stretch.py` landed. Additive cm offsets
+(none 0 · slight 1 · moderate 2 · high 3.5), `effective_measurement()`, typed
+`UnknownStretchLevelError`. Logic verified (12 assertions); full `uv run pytest` pending a
+3.12 toolchain.
 
 **Scope:** Encode v1 hand-tuned stretch coefficients. This is TKT-P1-11, pulled
 forward — the matching engine needs it.
