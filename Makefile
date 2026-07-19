@@ -50,7 +50,7 @@ test-ios:
 # ---------------------------------------------------------------------------
 db-reset:
 	docker compose -f $(COMPOSE_FILE) down -v
-	docker compose -f $(COMPOSE_FILE) up -d
+	docker compose -f $(COMPOSE_FILE) up -d --wait
 	cd apps/api && uv run alembic upgrade head
 
 # ---------------------------------------------------------------------------

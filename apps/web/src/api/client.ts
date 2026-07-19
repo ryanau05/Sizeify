@@ -14,8 +14,25 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) throw new Error(await errorMessage(res));
   return res.json() as Promise<T>;
+}
+
+// Surface the server's own message. FastAPI's `detail` is either a string
+// (our 422 for an unknown brand) or a list of per-field errors (add-garment
+// range validation) — without unpacking it the UI can only say "422", which
+// tells the user nothing about which measurement was rejected.
+async function errorMessage(res: Response): Promise<string> {
+  try {
+    const { detail } = await res.json();
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      return detail.map((d) => (d.field ? `${d.field}: ${d.message}` : d.msg)).join(" · ");
+    }
+  } catch {
+    // Non-JSON body — fall through to the status line.
+  }
+  return `${res.status} ${res.statusText}`;
 }
 
 export const api = {

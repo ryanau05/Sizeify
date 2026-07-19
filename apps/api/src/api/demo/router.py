@@ -4,7 +4,7 @@ Endpoints (all under ``/demo``):
   POST /demo/recommend-from-url   paste-URL -> recommendation (the headline moment)
   POST /demo/seed                 (re)seed the demo user, closet, brand products
   GET  /demo/closet               the demo user's closet (for the web client)
-  POST /demo/closet/garments      add a garment (DEMO-08, still stubbed)
+  POST /demo/closet/garments      add a garment + extract fit signals from feedback
 
 This stands in for the native share-extension hot path (PRD §9.2). It calls the
 SAME real domain core as production — only the scraper and LLM edges are stubbed.
@@ -15,6 +15,7 @@ email rather than from the JWT, so the flow works even without auth wired up.
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Any
 
@@ -22,7 +23,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from api.demo import stub_llm, stub_scraper
-from api.demo._normalize import normalize_size_chart
+from api.demo._normalize import canonical_dim, normalize_measurements, normalize_size_chart
 from api.demo.seed_demo import DEMO_USER_EMAIL
 from api.deps import (
     BrandProductRepositoryDep,
@@ -40,8 +41,10 @@ from api.domain.fit_profile import (
 from api.domain.matching import BrandProduct as EngineBrandProduct
 from api.domain.recommendation import recommend
 from api.models import OwnedGarment, User
-from api.repositories.base import transaction
 from api.schemas.enums import OverallRating, StretchLevel, Verdict
+from api.seeds.garment_categories import MENS_BUTTON_DOWN_SHIRT_ID
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/demo", tags=["demo"])
 
@@ -64,9 +67,7 @@ async def _demo_user(user_repo: UserRepositoryDep) -> User:
     )
 
 
-async def _closet_garments(
-    user_id: Any, og_repo: OwnedGarmentRepositoryDep
-) -> list[OwnedGarment]:
+async def _closet_garments(user_id: Any, og_repo: OwnedGarmentRepositoryDep) -> list[OwnedGarment]:
     return [g for g in await og_repo.list(limit=500) if g.user_id == user_id]
 
 
@@ -144,7 +145,10 @@ async def recommend_from_url(
     rec = recommend(profile, engine_product)
 
     # 4. Persist the recommendation (prompt_version='demo-v0'). Best-effort:
-    #    a persistence hiccup must not swallow the headline result.
+    #    a persistence hiccup must not swallow the headline result — but it
+    #    IS logged. A silent `except: pass` here hid the fact that this block
+    #    never committed a single row (the session is already in an autobegun
+    #    transaction by this point, so `session.begin()` raised every time).
     try:
         bp_row = next(
             (b for b in await bp_repo.list(limit=500) if b.product_url == product["url"]),
@@ -157,21 +161,21 @@ async def recommend_from_url(
                 for r in rec.reference_garments
                 if (r.brand, r.size_label) in by_brand_size
             ]
-            async with transaction(rec_repo.session):
-                await rec_repo.create(
-                    user_id=user.id,
-                    brand_product_id=bp_row.id,
-                    recommended_size=rec.primary.size_label,
-                    confidence=Decimal(str(rec.confidence)),
-                    fit_notes={
-                        "primary": list(rec.primary.fit_notes),
-                        "alternate": list(rec.alternate.fit_notes) if rec.alternate else None,
-                    },
-                    reference_garment_ids=ref_ids,
-                    prompt_version="demo-v0",
-                )
-    except Exception:  # noqa: BLE001 — demo: never fail the response on persist
-        pass
+            await rec_repo.create(
+                user_id=user.id,
+                brand_product_id=bp_row.id,
+                recommended_size=rec.primary.size_label,
+                confidence=Decimal(str(rec.confidence)),
+                fit_notes={
+                    "primary": list(rec.primary.fit_notes),
+                    "alternate": list(rec.alternate.fit_notes) if rec.alternate else None,
+                },
+                reference_garment_ids=ref_ids,
+                prompt_version="demo-v0",
+            )
+            await rec_repo.session.commit()
+    except Exception:
+        _log.exception("demo: failed to persist recommendation (response unaffected)")
 
     return rec.to_wire()
 
@@ -206,13 +210,114 @@ async def get_closet(
     ]
 
 
-@router.post("/closet/garments")
-async def add_garment() -> dict[str, Any]:
+# Accepted measurement ranges for the demo's add-garment form, in the fixture's
+# shorthand vocabulary. These are circumference-convention bounds matching
+# `demo_closet.json` and `MeasurementForm.tsx` — deliberately NOT the roadmap
+# `garment_category.measurement_schema` ranges, which use a different (pit-to-pit)
+# chest convention. Reconciling the two is real Phase 1 work (TKT-P1-09), not
+# something to settle inside throwaway demo code. Keep in sync with
+# apps/web/src/components/MeasurementForm.tsx.
+_DEMO_MEASUREMENT_RANGES: dict[str, tuple[float, float]] = {
+    "neck": (33.0, 50.0),
+    "chest": (85.0, 140.0),
+    "shoulder": (38.0, 56.0),
+    "sleeve": (75.0, 100.0),
+    "body_length": (65.0, 90.0),
+}
+
+
+class AddGarmentRequest(BaseModel):
+    measurements_cm: dict[str, float]
+    feedback: str | None = None
+    brand: str = "unknown"
+    size_label: str = "M"
+    product_name: str | None = None
+    stretch_level: str | None = None
+
+
+def _validate_measurements(raw: dict[str, float]) -> list[dict[str, str]]:
+    """Return a per-field error list (empty when the payload is valid)."""
+    errors: list[dict[str, str]] = []
+    for dimension, (low, high) in _DEMO_MEASUREMENT_RANGES.items():
+        if dimension not in raw or raw[dimension] is None:
+            errors.append({"field": dimension, "message": "This measurement is required."})
+            continue
+        value = raw[dimension]
+        if not low <= value <= high:
+            errors.append(
+                {
+                    "field": dimension,
+                    "message": f"Expected {low:g}–{high:g} cm, got {value:g}.",
+                }
+            )
+    unknown = set(raw) - set(_DEMO_MEASUREMENT_RANGES)
+    errors.extend(
+        {"field": name, "message": "Not a v1 button-down dimension."} for name in sorted(unknown)
+    )
+    return errors
+
+
+@router.post("/closet/garments", status_code=201)
+async def add_garment(
+    body: AddGarmentRequest,
+    user_repo: UserRepositoryDep,
+    og_repo: OwnedGarmentRepositoryDep,
+    fs_repo: FitSignalRepositoryDep,
+) -> dict[str, Any]:
     """Add a garment from the web onboarding flow (DEMO-08).
 
     Free-text feedback is run through ``stub_llm.extract`` to produce
-    ``nlp_extracted`` fit signals. Not on the headline path (the demo shell's
-    two tabs are Recommend + Closet), so left for DEMO-08/10.
+    ``nlp_extracted`` fit signals, persisted with the raw excerpt that
+    produced each one (CLAUDE.md: source + raw text are mandatory).
     """
-    _ = stub_llm  # keep the import live for DEMO-08
-    raise HTTPException(status_code=501, detail="DEMO-08: add-garment not implemented yet")
+    errors = _validate_measurements(body.measurements_cm)
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
+
+    user = await _demo_user(user_repo)
+    empty: dict[str, Any] = {"signals": [], "unparsed_notes": ""}
+    extraction = stub_llm.extract(body.feedback, {}) if body.feedback else empty
+
+    # No `transaction()` wrapper: reading the demo user above already autobegan
+    # a transaction on this session, and `session.begin()` raises on an already
+    # -begun session. Write into the open transaction and commit it explicitly.
+    garment = await og_repo.create(
+        user_id=user.id,
+        category_id=MENS_BUTTON_DOWN_SHIRT_ID,
+        brand=body.brand,
+        product_name=body.product_name,
+        size_label=body.size_label,
+        measurements=normalize_measurements(body.measurements_cm),
+        stretch_level=body.stretch_level or "none",
+        use_cases=[],
+    )
+    for sig in extraction["signals"]:
+        await fs_repo.create(
+            owned_garment_id=garment.id,
+            dimension=canonical_dim(sig["dimension"]),
+            verdict=sig["verdict"],
+            source=sig["source"],
+            raw_feedback_text=sig["raw_feedback_text"],
+        )
+    await og_repo.session.commit()
+
+    return {
+        "garment": {
+            "id": str(garment.id),
+            "label": garment.product_name or f"{garment.brand} {garment.size_label}",
+            "brand": garment.brand,
+            "size_label": garment.size_label,
+            "stretch_level": garment.stretch_level or "none",
+            "measurements_cm": {k: float(v) for k, v in garment.measurements.items()},
+        },
+        "signals": [
+            {
+                "dimension": canonical_dim(s["dimension"]),
+                "verdict": s["verdict"],
+                "source": s["source"],
+                "raw_feedback_text": s["raw_feedback_text"],
+            }
+            for s in extraction["signals"]
+        ],
+        "unparsed_notes": extraction["unparsed_notes"],
+    }

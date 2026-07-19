@@ -26,12 +26,30 @@ the **Status** line on a ticket in the same commit that lands it.
 
 ## Progress tracker
 
-_Last updated: 2026-06-11. **Headline flow complete end-to-end.** Engine (DEMO-01–04) plus the
-glue: DEMO-05 seed, DEMO-07 `/demo/recommend-from-url`, and DEMO-09 web wiring. Verified on the
-real fixtures (jcrew → M 0.73, uniqlo → L 0.72, unknown brand → 422). Remaining: DEMO-08/10
-(add-garment), DEMO-11–13 (fixture tuning, polish, rehearsal). **Run locally with `make demo`;
-the DB-backed seed/endpoint couldn't be executed in the build sandbox (no Postgres / 3.12), so
-do a `make demo` smoke run before relying on it. Full `uv run pytest` also pending 3.12._
+_Last updated: 2026-07-19. **Both flows now work end-to-end against a live Postgres**, verified
+from a clean `make db-reset && make demo-seed` (not a sandbox — actually executed). Headline
+URLs reproduce exactly: jcrew → M 0.73, banana_republic → M/L 0.56 (two-candidate),
+uniqlo → L 0.72, propercloth → 16/35 0.69, unknown brand → 422. Add-garment (DEMO-08) is
+implemented, and the closet flow (DEMO-10) renders extracted signal chips. `uv run pytest` is
+green (127 passed). Remaining: DEMO-12 (visual polish) and DEMO-13 (rehearsals + fallback
+recording), plus the DEMO-06 integration test._
+
+> **Three defects found on 2026-07-19 that the earlier "Done" marks had hidden** — the first
+> two were masked by a silent `except Exception: pass`, the third by never running the flow:
+>
+> 1. **Recommendation persistence never worked.** `session.begin()` inside the handler raised
+>    `A transaction is already begun` on every call (the session autobegins on the first read),
+>    and the bare except swallowed it. The `recommendation` table was empty after every demo
+>    run. Fixed: write into the open transaction, commit explicitly, and *log* persist failures.
+> 2. **`make db-reset` was broken.** `alembic upgrade head` raced the Postgres boot and died
+>    with a connection error on a cold start. Fixed with `docker compose up -d --wait`; the
+>    same race was in `scripts/demo.sh`.
+> 3. **`make lint-api` does not pass** and did not before this work either — 7 ruff errors in
+>    the DEMO-01–04 "KEEP" domain modules plus 1 mypy error, despite those tickets claiming
+>    "mypy clean". One is substantive: `F841` on `recommendation.py:123`, where `_relevance`
+>    computes a `weights` dict and never uses it — the reference-garment ranking may not be
+>    weighting dimensions as intended. **Left unfixed: it's a correctness question, not a lint
+>    nit, and it's in KEEP code that outlives the demo.**
 
 | Ticket | Day | Type | Status |
 |---|---|---|---|
@@ -41,14 +59,14 @@ do a `make demo` smoke run before relying on it. Full `uv run pytest` also pendi
 | DEMO-03 — `domain/matching.py` | 1 | KEEP | Done |
 | DEMO-04 — `domain/recommendation.py` | 1 | KEEP | Done |
 | DEMO-05 — Implement `demo/seed_demo.py` | 1 | THROWAWAY | Done |
-| DEMO-06 — Day-1 checkpoint: REPL recommendation | 1 | KEEP | Done (via script) |
-| DEMO-07 — `POST /demo/recommend-from-url` | 2 | THROWAWAY | Done |
-| DEMO-08 — Closet read + add-garment endpoints | 2 | THROWAWAY | Partial (closet GET done; add-garment stubbed) |
-| DEMO-09 — Web: paste-URL flow live | 2 | THROWAWAY | Done (web already wired; needs .env) |
-| DEMO-10 — Web: closet + add-garment flow live | 2 | THROWAWAY | Not started |
-| DEMO-11 — Tune fixtures (confident + two-candidate) | 3 | THROWAWAY | Not started |
+| DEMO-06 — Day-1 checkpoint: REPL recommendation | 1 | KEEP | Partial (script only; no CI test) |
+| DEMO-07 — `POST /demo/recommend-from-url` | 2 | THROWAWAY | Done (persistence fixed 07-19) |
+| DEMO-08 — Closet read + add-garment endpoints | 2 | THROWAWAY | Done |
+| DEMO-09 — Web: paste-URL flow live | 2 | THROWAWAY | Done |
+| DEMO-10 — Web: closet + add-garment flow live | 2 | THROWAWAY | Done |
+| DEMO-11 — Tune fixtures (confident + two-candidate) | 3 | THROWAWAY | Done |
 | DEMO-12 — Web polish + pre-auth | 3 | THROWAWAY | Not started |
-| DEMO-13 — Rehearsal, reset flow, fallback capture | 3 | THROWAWAY | Not started |
+| DEMO-13 — Rehearsal, reset flow, fallback capture | 3 | THROWAWAY | Partial (reset flow fixed + proven; rehearsal/recording pending) |
 
 > DEMO-00 is marked **Done** because the Phase 1 backbone it depends on (async session,
 > settings, test fixtures, migrations) is merged and the suite is green. Verify with
@@ -215,7 +233,8 @@ raw text mandatory).
 
 ### DEMO-06 — Day-1 checkpoint: REPL recommendation [KEEP]
 
-**Status:** Done (via script) — engine composed end-to-end on the real demo closet
+**Status:** Partial — engine verified end-to-end by hand, but `tests/integration/test_demo_recommend.py`
+still does not exist, so the checkpoint does not run in CI. Original note follows: Done (via script) — engine composed end-to-end on the real demo closet
 (jcrew Bowery → size M, confidence 0.73, four §5.4 components). A formal
 `tests/integration/test_demo_recommend.py` should be added once DEMO-05's seed lands so the
 checkpoint runs in CI from seeded DB state.
@@ -268,7 +287,15 @@ Also implemented `GET /demo/closet` (DEMO-08 partial); add-garment still stubbed
 
 ### DEMO-08 — Closet read + add-garment endpoints [THROWAWAY]
 
-**Status:** Not started
+**Status:** Done (2026-07-19) — `GET /demo/closet` + `POST /demo/closet/garments`. Measurements
+validated against the demo ranges (422 with a per-field error list); feedback runs through
+`stub_llm.extract` and the returned signals persist with `source='nlp_extracted'` and the clause
+that produced each one. `stub_llm` was rewritten to split clauses — the previous flat keyword
+table could not produce the acceptance case (it required "neck" to be literally present, so
+"collar is tight" matched nothing, and "perfect chest" matched `chest: slightly_tight`).
+Verified live: "perfect chest but collar is tight" → `chest: preferred` + `neck: slightly_tight`;
+out-of-range chest → 422. Note: the demo's ranges use the fixture's circumference convention,
+which does NOT match `garment_category.measurement_schema` — reconciling them is TKT-P1-09.
 
 **Scope:** Implement `GET /demo/closet` and `POST /demo/closet/garments` in
 `demo/router.py`, including stubbed extraction.
@@ -314,7 +341,11 @@ the magic moment renders.
 
 ### DEMO-10 — Web: closet + add-garment flow live [THROWAWAY]
 
-**Status:** Not started
+**Status:** Done (2026-07-19) — `AddGarmentPage` previously called `onDone()` in the same tick it
+set the signals, so the chips could never render; it now holds on a confirmation view until
+dismissed. Added brand/size inputs, an error path, and per-field 422 surfacing (`client.ts`
+was discarding the server's `detail`). `SignalChips` maps canonical dimension names to spoken
+labels. `MeasurementForm` ranges match `_DEMO_MEASUREMENT_RANGES` exactly.
 
 **Scope:** Wire `ClosetPage` / `AddGarmentPage` / `MeasurementForm` / `SignalChips` to
 the closet endpoints.
@@ -338,7 +369,9 @@ the closet endpoints.
 
 ### DEMO-11 — Tune fixtures for a confident pick + a two-candidate path [THROWAWAY]
 
-**Status:** Not started
+**Status:** Done (2026-07-19) — the `banana_republic` product (uncommitted until now) yields
+M vs L at 0.56. Both URLs documented in `demo/fixtures/README.md`, with a warning that nudging
+its chest steps collapses the two-candidate path. All four URLs re-verified from a clean reset.
 
 **Scope:** Make the seeded data tell a clean story. Tune fixtures, never the engine.
 
@@ -375,7 +408,10 @@ the closet endpoints.
 
 ### DEMO-13 — Rehearsal, reset flow, and fallback capture [THROWAWAY]
 
-**Status:** Not started
+**Status:** Partial (2026-07-19) — `make db-reset && make demo-seed` is now proven as the
+between-run reset, and was **broken** until this ticket touched it (migrations raced the
+Postgres boot; same race in `scripts/demo.sh`). Still outstanding: the 60–90s fallback screen
+recording and two full rehearsals against the §5 script.
 
 **Scope:** De-risk the live run.
 

@@ -33,5 +33,17 @@
       "15.5/34": {"neck_cm": 39, "chest_cm": 105, "shoulder_cm": 45, "sleeve_cm": 86, "body_length_cm": 79},
       "16/35":   {"neck_cm": 41, "chest_cm": 110, "shoulder_cm": 47, "sleeve_cm": 88, "body_length_cm": 81}
     }
+  },
+  {
+    "brand": "banana_republic",
+    "product_name": "Grant Slim-Fit Non-Iron Shirt",
+    "url": "https://bananarepublic.com/p/grant-slim-non-iron-shirt",
+    "scraper_version": "demo-v0",
+    "size_chart": {
+      "S":  {"neck_cm": 36,   "chest_cm": 100.5, "shoulder_cm": 41.5, "sleeve_cm": 82,   "body_length_cm": 75.5},
+      "M":  {"neck_cm": 39.5, "chest_cm": 105.5, "shoulder_cm": 45,   "sleeve_cm": 85.5, "body_length_cm": 79},
+      "L":  {"neck_cm": 43,   "chest_cm": 110.5, "shoulder_cm": 48.5, "sleeve_cm": 89,   "body_length_cm": 82.5},
+      "XL": {"neck_cm": 46.5, "chest_cm": 115.5, "shoulder_cm": 52,   "sleeve_cm": 92.5, "body_length_cm": 86}
+    }
   }
 ]

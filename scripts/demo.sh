@@ -7,7 +7,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "==> [1/4] Local infra (Postgres + Redis)…"
-docker compose -f infra/docker-compose.yml up -d
+# --wait blocks on the compose healthchecks. Without it the migration step
+# below races the Postgres boot and dies with a connection error on a cold
+# start (the container is "up" several seconds before it accepts connections).
+docker compose -f infra/docker-compose.yml up -d --wait
 
 echo "==> [2/4] Migrations…"
 ( cd apps/api && uv run alembic upgrade head )

@@ -57,9 +57,16 @@ button.ghost { background: transparent; border: 1px solid var(--line); color: va
 .add__feedback { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; }
 .add textarea { min-height: 70px; }
 .add__actions { display: flex; gap: 8px; justify-content: flex-end; }
+.add__identity { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; margin-bottom: 14px; }
+.add__error { color: #ff6b6b; font-size: 13px; }
+.add__empty { color: var(--muted); font-size: 14px; }
 
 .chips__list { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0; }
 .chip { padding: 4px 10px; border-radius: 999px; font-size: 13px; background: var(--line); }
 .chip--preferred { background: rgba(62,207,142,0.2); color: var(--good); }
+.chip--slightly_tight, .chip--slightly_loose,
+.chip--slightly_short { background: rgba(240,180,60,0.18); color: var(--warn); }
+.chip--too_tight, .chip--too_loose,
+.chip--too_short { background: rgba(255,107,107,0.18); color: #ff6b6b; }
 
 .error { color: #ff6b6b; }
