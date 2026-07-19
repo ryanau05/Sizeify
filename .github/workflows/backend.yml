@@ -88,6 +88,13 @@ jobs:
       - name: Mypy
         run: uv run mypy src
 
+      # tests/conftest.py assumes a migrated database (it wraps each test in a
+      # SAVEPOINT rather than creating tables), so the repository and seed
+      # suites need the schema in place. Without this the CI Postgres is empty
+      # and every DB-backed test fails on "relation ... does not exist".
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
       - name: Pytest
         run: uv run pytest
 
