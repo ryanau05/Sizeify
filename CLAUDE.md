@@ -140,3 +140,48 @@ These are PRD requirements, not aspirations. Flag any change that risks breachin
 - Each scraper has a fixture file with at least 5 known products and their expected size charts. Daily synthetic test runs against these to detect HTML drift early.
 - Prefer Shopify/affiliate APIs where available (PRD §9.3). Fall back to HTML scraping only when needed.
 - If a brand requires JS rendering, isolate it to that brand's module using Playwright — don't drag a headless browser into modules that don't need it.
+
+## gstack
+
+Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
+
+Available gstack skills:
+
+- `/office-hours`
+- `/plan-ceo-review`
+- `/plan-eng-review`
+- `/plan-design-review`
+- `/design-consultation`
+- `/design-shotgun`
+- `/design-html`
+- `/review`
+- `/ship`
+- `/land-and-deploy`
+- `/canary`
+- `/benchmark`
+- `/browse`
+- `/connect-chrome`
+- `/qa`
+- `/qa-only`
+- `/design-review`
+- `/setup-browser-cookies`
+- `/setup-deploy`
+- `/setup-gbrain`
+- `/retro`
+- `/investigate`
+- `/document-release`
+- `/document-generate`
+- `/codex`
+- `/cso`
+- `/autoplan`
+- `/plan-devex-review`
+- `/devex-review`
+- `/careful`
+- `/freeze`
+- `/guard`
+- `/unfreeze`
+- `/gstack-upgrade`
+- `/learn`
+
+Teammates: gstack is not vendored in this repo — install it locally with
+`git clone --single-branch --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack && cd ~/.claude/skills/gstack && ./setup`
