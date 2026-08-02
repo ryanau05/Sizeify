@@ -114,12 +114,19 @@ def test_decode_raises_on_expired_refresh() -> None:
 
 def test_decode_raises_on_tampered_signature() -> None:
     tok = auth_jwt._encode(uuid4(), TokenType.ACCESS, ttl_seconds=60)
-    # Flip the last character of the signature segment. Any change
-    # there breaks the HMAC, but keep it ASCII-safe so we don't trip
-    # base64 decode before signature validation.
-    tampered = tok[:-1] + ("A" if tok[-1] != "A" else "B")
+    # Flip the FIRST character of the signature segment, not the last. A
+    # 32-byte HMAC-SHA256 signature is 43 base64url chars, and the final
+    # char encodes only the top 4 bits of the last byte — its low 2 bits
+    # are padding the decoder discards. So editing the last char decodes
+    # to identical signature bytes whenever it is already "A", the HMAC
+    # still verifies, and this test spuriously passes ~1 run in 16. The
+    # first char carries 6 significant bits, so changing it always
+    # perturbs the signature. Stays in the base64url alphabet so we fail
+    # on signature validation rather than on decode.
+    header, payload, signature = tok.split(".")
+    tampered_sig = ("A" if signature[0] != "A" else "B") + signature[1:]
     with pytest.raises(InvalidTokenError):
-        decode(tampered)
+        decode(f"{header}.{payload}.{tampered_sig}")
 
 
 def test_decode_raises_on_wrong_secret(
