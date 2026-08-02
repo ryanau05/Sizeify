@@ -1,4 +1,4 @@
-"""Unit tests for recommendation assembly (DEMO-04 / TKT-P1-15)."""
+"""Unit tests for recommendation assembly (TKT-P1-15)."""
 
 from __future__ import annotations
 
@@ -22,8 +22,12 @@ def _profile(maturity=ProfileMaturity.DEVELOPING, sample_size=5):
         },
         references=(
             ReferenceGarment(
-                "Uniqlo M", "uniqlo", "M", OverallRating.LOVE,
-                {"chest": 105.0, "shoulder_width": 45.0}, (),
+                "Uniqlo M",
+                "uniqlo",
+                "M",
+                OverallRating.LOVE,
+                {"chest": 105.0, "shoulder_width": 45.0},
+                (),
             ),
         ),
     )

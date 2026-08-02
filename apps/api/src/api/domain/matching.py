@@ -1,4 +1,4 @@
-"""Matching engine (PRD §6.4) — DEMO-03 / TKT-P1-14.
+"""Matching engine (PRD §6.4) — TKT-P1-14.
 
 Pure ranking of a brand's available sizes against a ``FitProfile``. For each
 size we compute, per dimension, the signed gap between the size chart's
@@ -13,12 +13,12 @@ absolute gap breaks the tie so the most centred size still wins.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 
+from api.domain.dimension_weights import BUTTON_DOWN_DIMENSION_WEIGHTS
 from api.domain.fit_profile import FitProfile
 from api.domain.stretch import effective_measurement
-from api.domain.dimension_weights import BUTTON_DOWN_DIMENSION_WEIGHTS
 from api.schemas.enums import StretchLevel
 
 
@@ -51,10 +51,10 @@ class RankedSize:
     """One size's fit against the profile."""
 
     size_label: str
-    distance: float                       # weighted out-of-range distance (0 = ideal)
-    within_range: bool                    # every weighted dimension inside spread
+    distance: float  # weighted out-of-range distance (0 = ideal)
+    within_range: bool  # every weighted dimension inside spread
     per_dimension_deltas: Mapping[str, float]  # signed (candidate_effective − preferred), cm
-    residual: float                       # weighted |delta| tiebreaker
+    residual: float  # weighted |delta| tiebreaker
 
 
 def _weights_for(fit_profile: FitProfile) -> Mapping[str, float]:
@@ -81,8 +81,7 @@ def match(fit_profile: FitProfile, brand_product: BrandProduct) -> list[RankedSi
         for dim in scored_dims:
             if dim not in chart:
                 raise MissingDimensionError(
-                    f"{brand_product.brand} size {size_label!r} chart is missing "
-                    f"dimension {dim!r}"
+                    f"{brand_product.brand} size {size_label!r} chart is missing dimension {dim!r}"
                 )
             stat = fit_profile.dimensions[dim]
             candidate = effective_measurement(chart[dim], brand_product.stretch_level)

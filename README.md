@@ -8,19 +8,18 @@ Sizing is inconsistent across brands — an "M" in one label is an "L" in anothe
 
 ## Project status — in active development
 
-**This is an in-progress project, not a finished product.** It is being built in phases (see [PROJECT_PLAN.md](docs/PROJECT_PLAN.md)), and the current snapshot is an early backend foundation. The architecture, data model, and product spec are fully designed; the end-to-end recommendation flow is not yet wired up. A throwaway demo prototype was scoped on the `demo/capstone` branch but has **not** been implemented within the current timeline.
+**This is an in-progress project, not a finished product.** It is being built in phases (see [PROJECT_PLAN.md](docs/PROJECT_PLAN.md)), and the current snapshot is a backend foundation plus the domain core. The architecture, data model, and product spec are fully designed; the end-to-end recommendation flow is not yet wired up to the API surface.
 
 | Area | Status |
 |---|---|
 | Product spec, data model, phased plan | Complete (see `docs/`) |
 | Backend foundation — DB schema, repositories, Pydantic schemas, auth (Argon2 + JWT), migrations | Implemented and tested |
-| Domain core — fit-profile construction, matching engine, recommendation | Designed, not yet built |
+| Domain core — fit-profile construction, matching engine, recommendation | Implemented and unit-tested |
 | Closet & recommendation API endpoints | Not yet built |
 | Scrapers, LLM extraction service | Planned (Phases 2–3) |
 | iOS & Android clients | Planned (Phases 4–5) |
-| Demo prototype (`demo/capstone`) | Scaffolding only — not implemented |
 
-What's runnable today is the backend data layer with its test suite. The repo is shared at this stage to show the design thinking, architecture, and engineering foundation rather than a working app.
+What's runnable today is the backend data layer and the domain core, with their test suites. The repo is shared at this stage to show the design thinking, architecture, and engineering foundation rather than a working app.
 
 The repo is a monorepo with four independently deployable components:
 

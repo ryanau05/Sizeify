@@ -17,8 +17,8 @@ scope approval — that is a v2 item and changes the system's calibration story.
 
 from __future__ import annotations
 
-from types import MappingProxyType
 from collections.abc import Mapping
+from types import MappingProxyType
 
 from api.schemas.enums import StretchLevel
 
@@ -56,14 +56,10 @@ def stretch_offset_cm(stretch_level: StretchLevel | None) -> float:
     try:
         return STRETCH_OFFSETS_CM[StretchLevel(stretch_level)]
     except ValueError as exc:  # StretchLevel(...) rejected the value
-        raise UnknownStretchLevelError(
-            f"unknown stretch level: {stretch_level!r}"
-        ) from exc
+        raise UnknownStretchLevelError(f"unknown stretch level: {stretch_level!r}") from exc
 
 
-def effective_measurement(
-    measurement_cm: float, stretch_level: StretchLevel | None
-) -> float:
+def effective_measurement(measurement_cm: float, stretch_level: StretchLevel | None) -> float:
     """Adjust a garment measurement for fabric stretch (PRD §6.3).
 
     ``effective = measured + offset(stretch_level)``. Used by the matching

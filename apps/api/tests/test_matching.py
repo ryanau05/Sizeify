@@ -1,4 +1,4 @@
-"""Unit tests for the matching engine (DEMO-03 / TKT-P1-14)."""
+"""Unit tests for the matching engine (TKT-P1-14)."""
 
 from __future__ import annotations
 

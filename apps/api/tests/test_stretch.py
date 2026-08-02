@@ -1,4 +1,4 @@
-"""Unit tests for the v1 stretch-adjustment model (DEMO-01 / TKT-P1-11)."""
+"""Unit tests for the v1 stretch-adjustment model (TKT-P1-11)."""
 
 from __future__ import annotations
 

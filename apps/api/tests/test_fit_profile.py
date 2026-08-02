@@ -1,4 +1,4 @@
-"""Unit tests for fit-profile construction (DEMO-02 / TKT-P1-12)."""
+"""Unit tests for fit-profile construction (TKT-P1-12)."""
 
 from __future__ import annotations
 
@@ -60,30 +60,51 @@ def test_chest_pulled_up_by_slightly_tight_signal():
             ],
         )
 
-    pref_tight = build_fit_profile(closet_with(Verdict.SLIGHTLY_TIGHT)).dimensions["chest"].preferred_cm
+    tight_profile = build_fit_profile(closet_with(Verdict.SLIGHTLY_TIGHT))
+    pref_tight = tight_profile.dimensions["chest"].preferred_cm
     pref_ok = build_fit_profile(closet_with(Verdict.PREFERRED)).dimensions["chest"].preferred_cm
     # A "slightly tight" garment means the user wants MORE room → preferred rises.
     assert pref_tight > pref_ok
 
 
 def test_stretch_raises_effective_measurement():
-    no_stretch = build_fit_profile(
-        ClosetSnapshot("c", [_garment("a", 105.0, stretch_level=StretchLevel.NONE)])
-    ).dimensions["chest"].preferred_cm
-    high_stretch = build_fit_profile(
-        ClosetSnapshot("c", [_garment("a", 105.0, stretch_level=StretchLevel.HIGH)])
-    ).dimensions["chest"].preferred_cm
+    no_stretch = (
+        build_fit_profile(
+            ClosetSnapshot("c", [_garment("a", 105.0, stretch_level=StretchLevel.NONE)])
+        )
+        .dimensions["chest"]
+        .preferred_cm
+    )
+    high_stretch = (
+        build_fit_profile(
+            ClosetSnapshot("c", [_garment("a", 105.0, stretch_level=StretchLevel.HIGH)])
+        )
+        .dimensions["chest"]
+        .preferred_cm
+    )
     assert high_stretch > no_stretch  # +3.5 cm effective offset
 
 
 def test_use_case_tagged_signal_excluded_from_unconditioned_profile():
-    base = build_fit_profile(
-        ClosetSnapshot("c", [_garment("a", 105.0)])
-    ).dimensions["chest"].preferred_cm
-    with_gym_sig = build_fit_profile(
-        ClosetSnapshot(
-            "c",
-            [_garment("a", 105.0, signals=(SignalSnapshot("chest", Verdict.SLIGHTLY_TIGHT, use_case="gym"),))],
+    base = (
+        build_fit_profile(ClosetSnapshot("c", [_garment("a", 105.0)]))
+        .dimensions["chest"]
+        .preferred_cm
+    )
+    with_gym_sig = (
+        build_fit_profile(
+            ClosetSnapshot(
+                "c",
+                [
+                    _garment(
+                        "a",
+                        105.0,
+                        signals=(SignalSnapshot("chest", Verdict.SLIGHTLY_TIGHT, use_case="gym"),),
+                    )
+                ],
+            )
         )
-    ).dimensions["chest"].preferred_cm
+        .dimensions["chest"]
+        .preferred_cm
+    )
     assert with_gym_sig == base  # gym-tagged signal does not move the default profile

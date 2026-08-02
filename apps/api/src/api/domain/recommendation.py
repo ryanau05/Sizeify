@@ -1,4 +1,4 @@
-"""Recommendation assembly (PRD §5.4 / §6.4) — DEMO-04 / TKT-P1-15.
+"""Recommendation assembly (PRD §5.4 / §6.4) — TKT-P1-15.
 
 Wraps the matching engine with the confidence rule and assembles the four
 mandatory PRD §5.4 components: a recommended **size**, a **confidence** score,
@@ -6,17 +6,18 @@ human-readable **fit notes**, and the **reference garments** that drove the
 call. When confidence is below 60% a second candidate is returned with a
 trade-off string (PRD §5.4); a cold-start profile clamps confidence to ≤ 0.50.
 
-The output mirrors ``apps/web/src/api/types.ts::Recommendation`` exactly so the
-demo web client renders it without translation.
+The output shape is the API contract for the recommendation response; the
+Pydantic response model in the route layer mirrors it field for field.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
-from api.domain.fit_profile import FitProfile, ReferenceGarment as _RefGarment
+from api.domain.fit_profile import FitProfile
+from api.domain.fit_profile import ReferenceGarment as _RefGarment
 from api.domain.matching import BrandProduct, RankedSize, match
 from api.schemas.enums import OverallRating, ProfileMaturity
 
@@ -34,6 +35,12 @@ _CERTAINTY_BY_MATURITY: Mapping[ProfileMaturity, float] = {
     ProfileMaturity.COLD_START: 0.40,
     ProfileMaturity.DEVELOPING: 0.80,
     ProfileMaturity.MATURE: 1.0,
+}
+
+# Slight ranking boost so garments the user loves/likes surface as references first.
+_RATING_BONUS: Mapping[OverallRating, float] = {
+    OverallRating.LOVE: -2.0,
+    OverallRating.LIKE: -1.0,
 }
 
 # Human-readable dimension labels for fit notes.
@@ -120,7 +127,6 @@ def _fit_notes_for(fit_profile: FitProfile, size: RankedSize) -> list[str]:
 
 def _relevance(ref: _RefGarment, size: RankedSize, fit_profile: FitProfile) -> float:
     """Lower = more similar to the recommended size (weighted abs gap on shared dims)."""
-    weights = {d: fit_profile.dimensions[d].spread_cm for d in fit_profile.dimensions}
     total = 0.0
     for dim in fit_profile.dimensions:
         if dim in ref.measurements_cm:
@@ -128,19 +134,16 @@ def _relevance(ref: _RefGarment, size: RankedSize, fit_profile: FitProfile) -> f
             # proxy for "this is the garment closest to what we're recommending".
             total += abs(ref.measurements_cm[dim] - fit_profile.dimensions[dim].preferred_cm)
     # Slight boost for love/like garments so they surface first when relevant.
-    rating_bonus = {
-        OverallRating.LOVE: -2.0,
-        OverallRating.LIKE: -1.0,
-    }.get(ref.overall_rating, 0.0)
+    rating_bonus = (
+        _RATING_BONUS.get(ref.overall_rating, 0.0) if ref.overall_rating is not None else 0.0
+    )
     return total + rating_bonus
 
 
 def _reference_garments_for(
     fit_profile: FitProfile, size: RankedSize, limit: int = 2
 ) -> list[ReferenceGarmentOut]:
-    refs = sorted(
-        fit_profile.references, key=lambda r: _relevance(r, size, fit_profile)
-    )
+    refs = sorted(fit_profile.references, key=lambda r: _relevance(r, size, fit_profile))
     out: list[ReferenceGarmentOut] = []
     for ref in refs[:limit]:
         rated = (
@@ -159,9 +162,7 @@ def _reference_garments_for(
     return out
 
 
-def _confidence(
-    fit_profile: FitProfile, best: RankedSize, second: RankedSize | None
-) -> float:
+def _confidence(fit_profile: FitProfile, best: RankedSize, second: RankedSize | None) -> float:
     closeness = 1.0 / (1.0 + 0.6 * best.distance)  # 1.0 when best is fully in range
     if second is None:
         gap_score = 0.55  # only one size offered — moderate, can't compare

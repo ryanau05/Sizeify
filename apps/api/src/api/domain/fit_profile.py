@@ -1,4 +1,4 @@
-"""Fit-profile construction (PRD §6.2) — DEMO-02 / TKT-P1-12.
+"""Fit-profile construction (PRD §6.2) — TKT-P1-12.
 
 Pure, side-effect-free construction of a user's per-dimension preferred
 measurement ranges from a closet snapshot. No DB, no HTTP — the caller hands in
@@ -29,8 +29,8 @@ TKT-P1-12's full version lands.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 from api.domain.stretch import effective_measurement
 from api.schemas.enums import OverallRating, ProfileMaturity, StretchLevel, Verdict
@@ -66,8 +66,8 @@ _VERDICT_SIGN: Mapping[Verdict, float] = {
     for v, shift in _DEFAULT_VERDICT_SHIFT_CM.items()
 }
 
-BASE_SPREAD_CM = 3.0   # one-sigma spread at n=1, shrinks ~1/sqrt(n)
-MIN_SPREAD_CM = 1.0    # never claim tighter certainty than this in v1
+BASE_SPREAD_CM = 3.0  # one-sigma spread at n=1, shrinks ~1/sqrt(n)
+MIN_SPREAD_CM = 1.0  # never claim tighter certainty than this in v1
 
 # Closet-size thresholds for profile maturity (PRD §6.2: min 3, narrows at 15+).
 _DEVELOPING_MIN_GARMENTS = 3
@@ -191,9 +191,7 @@ def _signal_shift_cm(signal: SignalSnapshot) -> float:
     return _DEFAULT_VERDICT_SHIFT_CM[signal.verdict]
 
 
-def _unconditioned_signal(
-    garment: GarmentSnapshot, dimension: str
-) -> SignalSnapshot | None:
+def _unconditioned_signal(garment: GarmentSnapshot, dimension: str) -> SignalSnapshot | None:
     """The garment's signal on ``dimension`` that applies to the default profile.
 
     Use-case-tagged signals are excluded from the unconditioned profile.
