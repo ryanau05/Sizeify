@@ -92,6 +92,8 @@ Exit criterion: a fresh clone + `make bootstrap` (or equivalent) gets a contribu
 
 Goal: a backend that can store a user's closet and run the matching engine in isolation.
 
+> **Domain core already landed:** TKT-P1-11/12/14/15 (`stretch`, `fit_profile`, `matching`, `recommendation`) were built ahead of schedule on the now-deleted capstone demo branch (archived as the tag `archive/demo-capstone`) and cherry-picked onto `main` with their unit tests. Treat them as done and build the closet/recommendation endpoints on top rather than rebuilding. The demo's throwaway pieces (the `DEMO_MODE` ASGI app and web client) were discarded with the branch.
+
 Deliverables:
 - Alembic migration creating all six entities from PRD §8 plus `recommendation.prompt_version`. Indexes from §8.2.
 - Repository layer (`apps/api/src/api/repositories/`) wrapping every entity. No raw `AsyncSession` in route handlers — that boundary is in CLAUDE.md and it is load-bearing for tests.

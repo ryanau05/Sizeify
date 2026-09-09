@@ -6,7 +6,7 @@ Mobile app that recommends what size to buy in any clothing brand based on garme
 
 **Project plan and current status:** `docs/PROJECT_PLAN.md` is the phased build plan (Phase 0 → 9). `docs/PHASE_1_TICKETS.md` breaks the active phase into tickets. Read these before proposing work — they tell you what's done, what's in flight, and what's deferred. The PRD says *what* to build; the plan says *where we are* in building it.
 
-**Current status (as of 2026-05-23):** Phase 0 (Foundation) is complete, and the repo is now **private** (GitHub Pro) with branch protection intact — the earlier privacy blocker is resolved. Phase 1 (Backend core: schema, auth, closet CRUD) is **unblocked and ready to start**; see `docs/PHASE_1_TICKETS.md` for the ticket breakdown. Keep this paragraph current — if the date here is more than a week old, treat the status as suspect and re-read `docs/PROJECT_PLAN.md` before acting on it.
+**Current status (as of 2026-09-09):** Phase 0 (Foundation) is complete and the repo is **public** with branch protection on `main` (required status checks: backend/ios/android gates). Phase 1 (Backend core) is **in progress**: schema, repositories, Pydantic schemas, auth (Argon2 + JWT), and migrations `0001`/`0002` are landed, and the domain core (`stretch`, `fit_profile`, `matching`, `recommendation`) is now landed with unit tests. Closet and recommendation endpoints are **not built yet** — see `docs/PHASE_1_TICKETS.md`. The capstone demo track is finished and its branches (`demo/capstone`, `docs/demo-status`) have been deleted locally and on `origin`; the domain-core work it produced was cherry-picked onto `main` and everything else (the `DEMO_MODE` app and throwaway web client) was discarded. Their full history is preserved in the annotated tags `archive/demo-capstone` and `archive/docs-demo-status` — recover with `git checkout -b <name> archive/demo-capstone` rather than assuming the code is gone. Keep this paragraph current — if the date here is more than a week old, treat the status as suspect and re-read `docs/PROJECT_PLAN.md` before acting on it.
 
 ## Architecture
 
@@ -140,3 +140,48 @@ These are PRD requirements, not aspirations. Flag any change that risks breachin
 - Each scraper has a fixture file with at least 5 known products and their expected size charts. Daily synthetic test runs against these to detect HTML drift early.
 - Prefer Shopify/affiliate APIs where available (PRD §9.3). Fall back to HTML scraping only when needed.
 - If a brand requires JS rendering, isolate it to that brand's module using Playwright — don't drag a headless browser into modules that don't need it.
+
+## gstack
+
+Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
+
+Available gstack skills:
+
+- `/office-hours`
+- `/plan-ceo-review`
+- `/plan-eng-review`
+- `/plan-design-review`
+- `/design-consultation`
+- `/design-shotgun`
+- `/design-html`
+- `/review`
+- `/ship`
+- `/land-and-deploy`
+- `/canary`
+- `/benchmark`
+- `/browse`
+- `/connect-chrome`
+- `/qa`
+- `/qa-only`
+- `/design-review`
+- `/setup-browser-cookies`
+- `/setup-deploy`
+- `/setup-gbrain`
+- `/retro`
+- `/investigate`
+- `/document-release`
+- `/document-generate`
+- `/codex`
+- `/cso`
+- `/autoplan`
+- `/plan-devex-review`
+- `/devex-review`
+- `/careful`
+- `/freeze`
+- `/guard`
+- `/unfreeze`
+- `/gstack-upgrade`
+- `/learn`
+
+Teammates: gstack is not vendored in this repo — install it locally with
+`git clone --single-branch --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack && cd ~/.claude/skills/gstack && ./setup`
