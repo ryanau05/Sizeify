@@ -28,15 +28,32 @@ TKT-P1-07 landed):
   in rather than silently given a guessable credential. Recovery is a
   password reset, which is the correct outcome for a row that never had a
   password.
-* ``privacy_consent_accepted_at`` gets ``created_at`` — the only defensible
-  approximation, and the pre-auth rows are dev fixtures, not real consent
-  records.
+* ``privacy_consent_accepted_at`` gets ``SYNTHETIC_CONSENT_AT``, a deliberately
+  impossible timestamp (the Unix epoch, before this product existed). Using
+  ``created_at`` was the first instinct and is wrong: it manufactures a consent
+  record indistinguishable from a real one, and ``GET /me/export`` then presents
+  it to the user as "the consent record we are relying on". A fabricated consent
+  must be greppable. The pre-auth rows are dev fixtures, not real consent.
 """
 
+import os
 from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+
+#: Set to ``1`` to allow a downgrade that destroys data.
+DESTRUCTIVE_OPT_IN_ENV = "ALEMBIC_ALLOW_DESTRUCTIVE_DOWNGRADE"
+
+
+def _require_destructive_optin(revision_name: str) -> None:
+    """Refuse an irreversible downgrade unless explicitly allowed."""
+    if os.environ.get(DESTRUCTIVE_OPT_IN_ENV) != "1":
+        raise RuntimeError(
+            f"downgrading {revision_name} destroys data that cannot be recovered. "
+            f"Re-run with {DESTRUCTIVE_OPT_IN_ENV}=1 if that is genuinely intended."
+        )
+
 
 # revision identifiers, used by Alembic.
 revision: str = "0003_user_credentials"
@@ -49,6 +66,11 @@ depends_on: str | Sequence[str] | None = None
 # InvalidHashError internally and returns False, so nothing can
 # authenticate against it.
 LOCKED_PASSWORD_HASH = "!locked-no-password-set"
+
+# Obviously not a real consent timestamp: this product did not exist in 1970.
+# Anything at this instant was manufactured by this migration, never given by
+# a user.
+SYNTHETIC_CONSENT_AT = "1970-01-01T00:00:00+00:00"
 
 
 def upgrade() -> None:
@@ -65,8 +87,10 @@ def upgrade() -> None:
         )
     )
     op.execute(
-        'UPDATE "user" SET privacy_consent_accepted_at = created_at '
-        "WHERE privacy_consent_accepted_at IS NULL"
+        sa.text(
+            'UPDATE "user" SET privacy_consent_accepted_at = :synthetic '
+            "WHERE privacy_consent_accepted_at IS NULL"
+        ).bindparams(synthetic=SYNTHETIC_CONSENT_AT)
     )
 
     op.alter_column("user", "password_hash", nullable=False)
@@ -74,6 +98,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Downgrade schema. Destructive and one-way — see the guard below.
+
+    Dropping these columns destroys every credential and every consent record
+    in the database. Re-upgrading then backfills ``LOCKED_PASSWORD_HASH`` for
+    all of them, which no password can ever verify against, so every account
+    is locked out — and there is no password-reset flow to recover through
+    (``grep -rn "reset" src/api/routes`` returns nothing). Consent records are
+    simply gone.
+
+    Alembic will happily run this, so the guard is the only thing between a
+    mistyped ``downgrade`` and an unrecoverable database.
+    """
+    _require_destructive_optin("0003_user_credentials")
     op.drop_column("user", "privacy_consent_accepted_at")
     op.drop_column("user", "password_hash")

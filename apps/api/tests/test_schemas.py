@@ -370,6 +370,7 @@ def test_user_export_round_trip() -> None:
             privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
             preferred_units=PreferredUnits.CM,
             stated_fit_preference=StatedFitPreference.REGULAR,
+            device_push_token="apns-token-abc123",
         )
     )
 
@@ -400,6 +401,7 @@ def test_export_response_round_trip() -> None:
         privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
         preferred_units=PreferredUnits.CM,
         stated_fit_preference=None,
+        device_push_token=None,
     )
     garment = OwnedGarmentExport(
         id=uuid4(),

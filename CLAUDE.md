@@ -107,7 +107,7 @@ These are PRD requirements, not aspirations. Flag any change that risks breachin
 - For changes touching multiple components (mobile + backend + scrapers), write a short plan and wait for approval before editing.
 - Scraper modules share a uniform interface (PRD §9.3). New brand scrapers must conform — do not introduce per-brand interface variants.
 - LLM prompts live in version control as tagged templates. Changing a prompt means bumping its version, not editing in place — old `fit_signal` rows reference old versions.
-- When adding a measurement dimension or use case, update **all four** of: (a) `garment_category.measurement_schema`, (b) `dimension_weights`, (c) the NLP extraction prompt, (d) the matching engine. Missing any of these silently degrades recommendations.
+- When adding a measurement dimension or use case, update **all five** of: (a) `garment_category.measurement_schema` (the seed), (b) `dimension_weights`, (c) the NLP extraction prompt, (d) the matching engine, (e) `_DIM_LABEL` in `domain/recommendation.py`. Missing (a)–(d) silently degrades recommendations; missing (e) degrades the wording of the push notification the user actually reads ("Cuff Circumference" instead of "Cuff"). `test_seed_garment_categories.py` pins (a), (b) and (e) against each other.
 
 ## Gotchas
 

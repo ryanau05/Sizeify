@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.domain.dimension_weights import BUTTON_DOWN_DIMENSION_WEIGHTS
 from api.models import GarmentCategory
 from api.seeds.garment_categories import (
+    _BUTTON_DOWN_MEASUREMENT_SCHEMA,
     MENS_BUTTON_DOWN_SHIRT_ID,
     seed_garment_categories,
 )
@@ -145,3 +146,20 @@ class TestSeedIntegration:
             )
         ).scalar_one()
         assert count == 1
+
+
+def test_every_dimension_has_a_human_label() -> None:
+    """The fifth place in CLAUDE.md's dimension-update rule.
+
+    ``_DIM_LABEL`` has a ``.get()`` fallback, so a missing entry does not
+    fail — it just title-cases the identifier, and the user reads "Cuff
+    Circumference" instead of "Cuff" in a push notification (PRD §5.4). That
+    is precisely the kind of silent degradation the rule exists to prevent.
+    """
+    from api.domain.recommendation import _DIM_LABEL
+
+    schema_dimensions = {entry["name"] for entry in _BUTTON_DOWN_MEASUREMENT_SCHEMA["dimensions"]}
+
+    assert schema_dimensions <= set(_DIM_LABEL), (
+        f"no fit-note label for: {sorted(schema_dimensions - set(_DIM_LABEL))}"
+    )

@@ -26,6 +26,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import jwt as auth_jwt
@@ -258,17 +259,45 @@ async def get_current_user(
 #: Canonical call-site form for protected handlers.
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
+
 #: OpenAPI documentation for the 401 every ``CurrentUser`` handler can
 #: return. FastAPI infers the security requirement from the dependency but
 #: not the failure response, so protected routes spread this into their
 #: decorator to keep the generated docs honest::
 #:
 #:     @router.get("/closet/garments", responses=UNAUTHORIZED_RESPONSE)
+class ErrorDetail(BaseModel):
+    """The body FastAPI renders for a raised ``HTTPException``.
+
+    Declared so generated clients get a type for it. Note this is a different
+    shape from a 422, whose ``detail`` is a *list* of per-field entries —
+    which is exactly the kind of thing a typed client needs told.
+    """
+
+    detail: str
+
+
+#: Reusable OpenAPI ``responses`` entries. Spread into route decorators::
+#:
+#:     @router.get("/closet/garments", responses={**UNAUTHORIZED_RESPONSE})
 UNAUTHORIZED_RESPONSE: dict[int | str, dict[str, Any]] = {
     status.HTTP_401_UNAUTHORIZED: {
+        "model": ErrorDetail,
         "description": (
             "Missing, malformed, expired, or otherwise unusable access token. "
             "The 'WWW-Authenticate' header carries an RFC 6750 error code."
-        )
+        ),
+    }
+}
+
+#: Every ``/auth/*`` path can be throttled by ``api.rate_limit``, which runs as
+#: middleware and so is invisible to FastAPI's response inference.
+RATE_LIMITED_RESPONSE: dict[int | str, dict[str, Any]] = {
+    status.HTTP_429_TOO_MANY_REQUESTS: {
+        "model": ErrorDetail,
+        "description": (
+            "Too many requests from this client. The 'Retry-After' header "
+            "carries the number of whole seconds to wait."
+        ),
     }
 }

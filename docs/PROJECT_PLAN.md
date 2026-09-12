@@ -116,8 +116,10 @@ Goal: a backend that can store a user's closet and run the matching engine in is
 > limiter's key space was attacker-controlled. Migration `0005` and 16 regression
 > tests came out of it.
 >
-> The remaining findings are carried in `TODOS.md`, four of them P0. They are
-> reproduced, not speculative, and should close before the API takes real traffic.
+> The remaining 18 findings were carried in `TODOS.md` and **17 were closed on
+> 2026-09-11** (all four P0s, all four P1s, all six P2s, three of four P3s).
+> The one still open is signup's account-existence oracle, which needs a
+> transactional email pipeline that does not exist yet.
 >
 > **Convention settled during the review:** chest is pit-to-pit **un-doubled**
 > (~54 cm). PRD §5.1's "pit-to-pit doubled" and PRD §5.2's 35–80 cm range

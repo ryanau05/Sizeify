@@ -75,7 +75,15 @@ class OwnedGarmentCreate(_OwnedGarmentBase):
     ``category_id`` is the garment_category slug (e.g.
     ``"mens_button_down_shirt"``). v1 only accepts the seeded slug; the
     route validates against ``garment_category`` before insert.
+
+    ``extra="forbid"`` here and not on ``_OwnedGarmentBase`` so the response
+    model stays permissive: strictness belongs on what clients send, not on
+    what we build from a database row. Without it, create silently dropped
+    unknown fields while PATCH rejected them, so a client typo failed loudly
+    on one verb and silently on the other.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     category_id: str = Field(min_length=1, max_length=100)
 
@@ -170,7 +178,14 @@ class FitSignalCreate(BaseModel):
     land with ``source = "user_added"`` and the route synthesizes the
     ``raw_feedback_text`` column from the dimension+verdict combo when
     the client doesn't supply one (CLAUDE.md: column is never null).
+
+    Extras are forbidden so a body carrying ``source`` — the one field this
+    endpoint deliberately refuses to let clients set — is a 422 naming it. It
+    used to be dropped in silence, so a client that believed it was writing
+    ``nlp_extracted`` rows never found out otherwise.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     dimension: str = Field(min_length=1, max_length=100)
     verdict: Verdict

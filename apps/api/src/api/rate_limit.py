@@ -49,6 +49,7 @@ No lock is needed, and adding one would only serialize the loop.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import logging
 import math
@@ -165,20 +166,25 @@ class RateLimitMiddleware:
         app: ASGIApp,
         *,
         limiter: TokenBucketLimiter,
-        path_prefix: str = "/auth/",
+        path_prefixes: Sequence[str] = ("/auth/",),
         known_paths: Iterable[str] = (),
         trusted_proxies: Sequence[str] = (),
+        key_by_bearer: bool = False,
     ) -> None:
         self.app = app
         self._limiter = limiter
-        self._path_prefix = path_prefix
+        self._path_prefixes = tuple(path_prefixes)
         self._trusted_proxies = _parse_networks(trusted_proxies)
+        # Authenticated surfaces bill the credential rather than the address,
+        # so one account cannot spend a shared office IP's whole budget — and
+        # cannot escape its own by changing networks.
+        self._key_by_bearer = key_by_bearer
         # Bucket keys are per-endpoint, and this is the set of endpoints that
         # actually exist. Anything else collapses to one shared key.
         self._known_paths = frozenset(known_paths)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not scope["path"].startswith(self._path_prefix):
+        if scope["type"] != "http" or not scope["path"].startswith(self._path_prefixes):
             await self.app(scope, receive, send)
             return
 
@@ -214,7 +220,33 @@ class RateLimitMiddleware:
         worse than no limiter at all.
         """
         path = scope["path"] if scope["path"] in self._known_paths else "<unrouted>"
-        return f"{self._client_ip(scope)}:{path}"
+        return f"{self._principal(scope)}:{path}"
+
+    def _principal(self, scope: Scope) -> str:
+        """Who to bill: the bearer credential where there is one, else the IP.
+
+        Hashed rather than stored raw — a bucket key ends up in memory dumps
+        and, if this is ever logged, in the log store. A token-shaped secret
+        should not be sitting in either.
+
+        The hash is of the raw token, not the ``sub`` claim, so this needs no
+        signature verification and does no crypto work on the hot path. The
+        cost is that a user holding two access tokens gets two buckets, which
+        is a rounding error against a per-minute budget, and a forged token is
+        still rejected downstream by ``deps.get_current_user``.
+        """
+        if not self._key_by_bearer:
+            return self._client_ip(scope)
+
+        for raw_name, raw_value in scope.get("headers", ()):
+            if raw_name == b"authorization":
+                scheme, _, token = raw_value.decode("latin-1").partition(" ")
+                if scheme.lower() == "bearer" and token.strip():
+                    digest = hashlib.sha256(token.strip().encode("utf-8")).hexdigest()
+                    return f"bearer:{digest[:32]}"
+        # Unauthenticated request to an authenticated surface: it will 401, but
+        # bill the address so a flood of them is still bounded.
+        return self._client_ip(scope)
 
     def _client_ip(self, scope: Scope) -> str:
         """The address to bill this request to.

@@ -52,6 +52,19 @@ class Settings(BaseSettings):
     auth_rate_limit_capacity: int = rate_limit.DEFAULT_CAPACITY
     auth_rate_limit_window_seconds: int = rate_limit.DEFAULT_WINDOW_SECONDS
 
+    # Budget for the authenticated surfaces (/closet, /me), per credential
+    # rather than per address. Looser than the auth budget because these are
+    # ordinary app traffic, but bounded: POST /closet/garments creates rows,
+    # GET /closet/fit-profile recomputes the whole profile, and GET /me/export
+    # runs three unbounded queries by design.
+    user_rate_limit_capacity: int = 120
+    user_rate_limit_window_seconds: int = 60
+
+    #: Ceiling on how many live garments one user may hold. v1 onboarding asks
+    #: for 3-5 (PRD §10.1); this is far above any real closet and exists so the
+    #: create endpoint is not an unbounded row-creation primitive.
+    max_closet_garments: int = 500
+
     # Comma-separated CIDRs of load balancers / ingress allowed to set
     # ``X-Forwarded-For``. Empty by default, which means the rate limiter
     # trusts nothing and keys on the TCP peer.

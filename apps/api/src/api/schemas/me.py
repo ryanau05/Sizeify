@@ -54,8 +54,13 @@ class UserExport(BaseModel):
 
     No ``password_hash`` — a credential is not "the user's data" in any
     useful sense, and shipping one in a downloadable file is a liability.
-    No ``device_push_token`` either: it identifies a handset, is rotated by
-    the OS, and is meaningless outside our own push pipeline.
+    The refresh-token chain is out for the same reason.
+
+    ``device_push_token`` *is* included. The earlier reasoning was that it
+    identifies a handset, is OS-rotated, and is meaningless outside our own
+    push pipeline — all true, and none of it the test Art. 15 applies. A
+    device identifier the controller stores against a named user is personal
+    data whether or not it is portable.
 
     ``privacy_consent_accepted_at`` *is* included. It is personal data the
     controller holds about the user, and GDPR Art. 15 covers it — a user
@@ -71,6 +76,7 @@ class UserExport(BaseModel):
     privacy_consent_accepted_at: datetime
     preferred_units: PreferredUnits
     stated_fit_preference: StatedFitPreference | None
+    device_push_token: str | None
 
 
 class OwnedGarmentExport(OwnedGarmentResponse):

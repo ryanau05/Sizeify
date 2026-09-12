@@ -30,11 +30,31 @@ def create_app() -> FastAPI:
             capacity=settings.auth_rate_limit_capacity,
             window_seconds=settings.auth_rate_limit_window_seconds,
         ),
-        path_prefix="/auth/",
+        path_prefixes=("/auth/",),
         # The real endpoint list, so an unrouted /auth/* path cannot mint a
         # bucket of its own (see ``RateLimitMiddleware._key``).
         known_paths=[route.path for route in auth.router.routes if hasattr(route, "path")],
         trusted_proxies=settings.trusted_proxies(),
+    )
+
+    # Second, looser bucket for the authenticated surfaces. Only /auth/* was
+    # throttled, so any valid token could drive closet writes, profile
+    # recomputation and the full GDPR export at an unbounded rate.
+    app.add_middleware(
+        RateLimitMiddleware,
+        limiter=TokenBucketLimiter(
+            capacity=settings.user_rate_limit_capacity,
+            window_seconds=settings.user_rate_limit_window_seconds,
+        ),
+        path_prefixes=("/closet/", "/me"),
+        known_paths=[
+            route.path
+            for router in (closet.router, me.router)
+            for route in router.routes
+            if hasattr(route, "path")
+        ],
+        trusted_proxies=settings.trusted_proxies(),
+        key_by_bearer=True,
     )
 
     app.include_router(health.router)

@@ -39,6 +39,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
+from api.config import get_settings
 from api.deps import (
     UNAUTHORIZED_RESPONSE,
     CurrentUser,
@@ -226,6 +227,20 @@ async def create_garment(
     _require_supported_category(body.category_id)
     category = await _load_category(body.category_id, categories)
     _validate_against_category(body.measurements, category)
+
+    # Bounded so the endpoint is not an unbounded row-creation primitive for
+    # anyone holding a valid token. The ceiling is far above a real closet —
+    # PRD §10.1 asks for 3-5 garments at onboarding.
+    settings = get_settings()
+    live = len(await garments.list_for_user(user.id, limit=None))
+    if live >= settings.max_closet_garments:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Closet is full ({settings.max_closet_garments} garments). "
+                "Delete something before adding more."
+            ),
+        )
 
     async with transaction(garments.session):
         garment = await garments.create(

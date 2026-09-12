@@ -81,3 +81,32 @@ def test_verify_completes_under_500ms() -> None:
         f"verify took {elapsed_s * 1000:.0f} ms (>500 ms ceiling) — "
         "lower MEMORY_COST_KIB / TIME_COST in api/auth/password.py"
     )
+
+
+def test_needs_rehash_is_false_for_a_current_hash() -> None:
+    assert password.needs_rehash(password.hash("current-params-1")) is False
+
+
+def test_needs_rehash_is_true_for_weaker_parameters() -> None:
+    """The upgrade path that makes re-calibrating ``MEMORY_COST_KIB`` mean
+    anything for accounts that already exist."""
+    from argon2 import PasswordHasher, Type
+
+    weaker = PasswordHasher(
+        time_cost=1,
+        memory_cost=8,
+        parallelism=1,
+        hash_len=password.HASH_LEN_BYTES,
+        salt_len=password.SALT_LEN_BYTES,
+        type=Type.ID,
+    ).hash("old-params-1")
+
+    assert password.needs_rehash(weaker) is True
+    # And the old hash still verifies, so the user is not locked out meanwhile.
+    assert password.verify("old-params-1", weaker) is True
+
+
+def test_needs_rehash_is_false_for_an_unparseable_hash() -> None:
+    """Migration 0003's locked sentinel among them: re-hashing something that
+    never verified would be meaningless."""
+    assert password.needs_rehash("!locked-no-password-set") is False

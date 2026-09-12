@@ -55,6 +55,29 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Downgrade schema. Destroys tombstones, so it refuses to guess.
+
+    Dropping ``deleted_at`` does not merely remove a column: every garment the
+    user deleted comes back as a live closet row, reappearing in
+    ``GET /closet/garments`` and re-entering fit-profile construction, which
+    filters on ``deleted_at IS NULL``. That is user-visible data resurrection,
+    not a no-op rollback.
+
+    There is no correct automatic answer — hard-deleting the tombstoned rows
+    loses data, keeping them resurrects it — so this refuses while any exist
+    and leaves the choice to a human.
+    """
+    tombstoned = (
+        op.get_bind()
+        .execute(sa.text("SELECT count(*) FROM owned_garment WHERE deleted_at IS NOT NULL"))
+        .scalar_one()
+    )
+    if tombstoned:
+        raise RuntimeError(
+            f"{tombstoned} soft-deleted garment(s) would come back as live closet rows. "
+            "Hard-delete them first (DELETE FROM owned_garment WHERE deleted_at IS NOT NULL) "
+            "if that is intended, then re-run this downgrade."
+        )
+
     op.drop_index("ix_owned_garment_user_id_active", table_name="owned_garment")
     op.drop_column("owned_garment", "deleted_at")

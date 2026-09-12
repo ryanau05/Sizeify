@@ -282,7 +282,20 @@ async def test_export_never_contains_credentials(
     assert "password_hash" not in body
     assert "$argon2" not in body
     assert "refresh" not in body
-    assert "apns-token-abc123" not in body
+
+
+async def test_export_includes_the_device_push_token(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A device identifier the controller stores against a named user is
+    personal data under Art. 15, whether or not it is portable. It was
+    excluded on the grounds of being meaningless outside our push pipeline,
+    which is true and is not the test the regulation applies."""
+    user = await make_user(db_session, device_push_token="apns-token-abc123")
+
+    body = (await client.get(EXPORT, headers=await headers_for(db_session, user))).json()
+
+    assert body["user"]["device_push_token"] == "apns-token-abc123"
 
 
 async def test_export_omits_shared_catalog_state(

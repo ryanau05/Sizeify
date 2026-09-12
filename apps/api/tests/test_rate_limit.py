@@ -253,3 +253,50 @@ def test_unparseable_trusted_cidr_does_not_widen_trust() -> None:
     middleware = _middleware(["not-a-cidr"])
 
     assert middleware._client_ip(_scope("10.0.0.5", "1.2.3.4")) == "10.0.0.5"
+
+
+def test_authenticated_surfaces_bill_the_credential_not_the_address() -> None:
+    """Two users behind one NAT must not share a budget, and one user must not
+    escape theirs by changing networks."""
+    middleware = _middleware()
+    middleware._key_by_bearer = True
+
+    def scope(peer: str, token: str | None) -> dict[str, Any]:
+        s = _scope(peer)
+        s["path"] = "/closet/garments"
+        if token:
+            s["headers"] = [(b"authorization", f"Bearer {token}".encode())]
+        return s
+
+    same_user_two_networks = {
+        middleware._principal(scope("10.0.0.1", "tok-a")),
+        middleware._principal(scope("203.0.113.7", "tok-a")),
+    }
+    two_users_one_network = {
+        middleware._principal(scope("10.0.0.1", "tok-a")),
+        middleware._principal(scope("10.0.0.1", "tok-b")),
+    }
+
+    assert len(same_user_two_networks) == 1, "same credential should share a bucket"
+    assert len(two_users_one_network) == 2, "different credentials should not"
+
+
+def test_the_bucket_key_never_contains_the_raw_token() -> None:
+    """Keys end up in memory dumps and, if ever logged, in the log store."""
+    middleware = _middleware()
+    middleware._key_by_bearer = True
+    s = _scope("10.0.0.1")
+    s["path"] = "/closet/garments"
+    s["headers"] = [(b"authorization", b"Bearer super-secret-token-value")]
+
+    assert "super-secret-token-value" not in middleware._principal(s)
+
+
+def test_unauthenticated_request_to_an_authenticated_surface_bills_the_address() -> None:
+    """It will 401, but a flood of them still has to be bounded."""
+    middleware = _middleware()
+    middleware._key_by_bearer = True
+    s = _scope("198.51.100.4")
+    s["path"] = "/closet/garments"
+
+    assert middleware._principal(s) == "198.51.100.4"

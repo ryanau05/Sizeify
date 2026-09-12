@@ -415,3 +415,38 @@ def test_password_hashing_runs_off_the_event_loop() -> None:
     assert "anyio.to_thread.run_sync(\n        auth_password.verify" in source or (
         "run_sync(auth_password.verify" in source
     )
+
+
+async def test_login_upgrades_a_weakly_hashed_password(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Re-calibrating the argon2 parameters only helps existing accounts if
+    login rehashes them; otherwise every current user keeps the weaker hash
+    forever and there is no reset flow to recover through."""
+    from argon2 import PasswordHasher, Type
+    from sqlalchemy import select
+
+    from api.auth import password as auth_password
+    from api.models import User
+
+    weak = PasswordHasher(
+        time_cost=1,
+        memory_cost=8,
+        parallelism=1,
+        hash_len=auth_password.HASH_LEN_BYTES,
+        salt_len=auth_password.SALT_LEN_BYTES,
+        type=Type.ID,
+    ).hash(PASSWORD)
+    await make_user(db_session, email="legacy@example.com", password_hash=weak)
+
+    response = await client.post(
+        "/auth/login", json={"email": "legacy@example.com", "password": PASSWORD}
+    )
+
+    assert response.status_code == 200
+    stored = (
+        await db_session.execute(select(User).where(User.email == "legacy@example.com"))
+    ).scalar_one()
+    assert stored.password_hash != weak
+    assert auth_password.needs_rehash(stored.password_hash) is False
+    assert auth_password.verify(PASSWORD, stored.password_hash) is True

@@ -124,3 +124,24 @@ def verify(password: str, hash: str) -> bool:
     except (VerificationError, InvalidHashError):
         return False
     return True
+
+
+def needs_rehash(hash: str) -> bool:
+    """Was ``hash`` produced with weaker parameters than we use now?
+
+    The module's whole premise is that ``MEMORY_COST_KIB`` gets re-measured and
+    raised on production hardware. Without this check that only helps accounts
+    created *after* the change: every existing user keeps their old, weaker
+    hash forever, and there is no path to upgrade it short of a password reset
+    (which this product does not have).
+
+    Login is the one moment the plaintext is in hand and can be re-hashed, so
+    it is the only place the upgrade can happen. Returns ``False`` for a hash
+    this module cannot parse — migration 0003's ``LOCKED_PASSWORD_HASH``
+    sentinel among them — since re-hashing something that never verified would
+    be meaningless.
+    """
+    try:
+        return _hasher.check_needs_rehash(hash)
+    except InvalidHashError:
+        return False

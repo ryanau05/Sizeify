@@ -29,7 +29,7 @@ the transaction for exactly that reason.
 """
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 import anyio.to_thread
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -38,7 +38,12 @@ from sqlalchemy.exc import IntegrityError
 from api.auth import jwt as auth_jwt
 from api.auth import password as auth_password
 from api.config import Settings, get_settings
-from api.deps import RefreshTokenRepositoryDep, UserRepositoryDep
+from api.deps import (
+    RATE_LIMITED_RESPONSE,
+    ErrorDetail,
+    RefreshTokenRepositoryDep,
+    UserRepositoryDep,
+)
 from api.models import User
 from api.repositories.base import transaction
 from api.schemas.auth import LoginRequest, RefreshRequest, SignupRequest, TokenPair
@@ -129,7 +134,26 @@ async def _verify_credentials(user: User | None, submitted_password: str) -> Use
     return user
 
 
-@router.post("/signup", status_code=status.HTTP_201_CREATED)
+_EMAIL_TAKEN_RESPONSE: dict[int | str, dict[str, Any]] = {
+    status.HTTP_409_CONFLICT: {
+        "model": ErrorDetail,
+        "description": "An account already exists for that email address.",
+    }
+}
+
+_INVALID_CREDENTIALS_RESPONSE: dict[int | str, dict[str, Any]] = {
+    status.HTTP_401_UNAUTHORIZED: {
+        "model": ErrorDetail,
+        "description": "Email and password did not match, or the refresh token is unusable.",
+    }
+}
+
+
+@router.post(
+    "/signup",
+    status_code=status.HTTP_201_CREATED,
+    responses={**_EMAIL_TAKEN_RESPONSE, **RATE_LIMITED_RESPONSE},
+)
 async def signup(
     body: SignupRequest,
     users: UserRepositoryDep,
@@ -168,7 +192,10 @@ async def signup(
     return _token_pair(access, refresh, settings)
 
 
-@router.post("/login")
+@router.post(
+    "/login",
+    responses={**_INVALID_CREDENTIALS_RESPONSE, **RATE_LIMITED_RESPONSE},
+)
 async def login(
     body: LoginRequest,
     users: UserRepositoryDep,
@@ -179,12 +206,23 @@ async def login(
     user = await _verify_credentials(await users.get_by_email(body.email), body.password)
 
     async with transaction(users.session):
+        # Login is the only moment the plaintext exists, so it is the only
+        # place a hash produced with since-raised parameters can be upgraded.
+        # Same transaction as the token issue: either both land or neither.
+        if await anyio.to_thread.run_sync(auth_password.needs_rehash, user.password_hash):
+            upgraded = await anyio.to_thread.run_sync(auth_password.hash, body.password)
+            await users.update(user.id, password_hash=upgraded)
+            logger.info("auth.password.rehashed", extra={"user_id": str(user.id)})
+
         access, refresh = await auth_jwt.issue_pair(user.id, refresh_tokens)
 
     return _token_pair(access, refresh, settings)
 
 
-@router.post("/refresh")
+@router.post(
+    "/refresh",
+    responses={**_INVALID_CREDENTIALS_RESPONSE, **RATE_LIMITED_RESPONSE},
+)
 async def refresh(
     body: RefreshRequest,
     refresh_tokens: RefreshTokenRepositoryDep,

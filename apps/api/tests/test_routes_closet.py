@@ -569,19 +569,23 @@ async def test_garment_is_owned_by_the_authenticated_user(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """``user_id`` comes from the token, never from the body — a client
-    cannot plant a garment in someone else's closet."""
+    cannot plant a garment in someone else's closet.
+
+    The body field is now rejected rather than ignored, so a client that
+    thought it was choosing an owner is told it was not.
+    """
     alice = await make_user(db_session, email="alice@example.com")
     bob = await make_user(db_session, email="bob@example.com")
     access, _ = await auth_jwt.issue_pair(alice.id, RefreshTokenRepository(db_session))
+    headers = {"Authorization": f"Bearer {access}"}
 
-    created = await client.post(
-        GARMENTS,
-        json=garment_body(user_id=str(bob.id)),
-        headers={"Authorization": f"Bearer {access}"},
-    )
+    spoofed = await client.post(GARMENTS, json=garment_body(user_id=str(bob.id)), headers=headers)
+    honest = await client.post(GARMENTS, json=garment_body(), headers=headers)
 
-    assert created.status_code == 201
-    assert created.json()["user_id"] == str(alice.id)
+    assert spoofed.status_code == 422
+    # And the ordinary path still attributes the garment to the token holder.
+    assert honest.status_code == 201
+    assert honest.json()["user_id"] == str(alice.id)
 
 
 async def test_closet_list_is_not_silently_truncated(
@@ -622,3 +626,45 @@ async def test_patch_cannot_clear_a_not_null_column(
     assert response.status_code == 422
     # And the garment is still readable.
     assert (await client.get(GARMENTS, headers=headers)).status_code == 200
+
+
+async def test_create_rejects_unknown_fields(client: AsyncClient, db_session: AsyncSession) -> None:
+    """Create and update must agree about strictness. Create used to drop
+    unknown fields silently while PATCH rejected them, so the same typo
+    failed loudly on one verb and silently on the other."""
+    headers = await auth_headers(db_session)
+
+    response = await client.post(GARMENTS, json=garment_body(brnad="typo"), headers=headers)
+
+    assert response.status_code == 422
+    assert ["body", "brnad"] in [error["loc"] for error in response.json()["detail"]]
+
+
+async def test_closet_size_is_capped(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST was an unbounded row-creation primitive for anyone holding a valid
+    token. The real ceiling is far above any closet (PRD §10.1 asks for 3-5 at
+    onboarding); lowered here so the test does not write 500 rows."""
+    monkeypatch.setenv("MAX_CLOSET_GARMENTS", "2")
+    get_settings.cache_clear()
+    headers = await auth_headers(db_session)
+
+    for index in range(2):
+        created = await client.post(
+            GARMENTS, json=garment_body(brand=f"Brand {index}"), headers=headers
+        )
+        assert created.status_code == 201
+
+    overflow = await client.post(GARMENTS, json=garment_body(brand="One too many"), headers=headers)
+
+    assert overflow.status_code == 409
+    assert "full" in overflow.json()["detail"].lower()
+    # A delete makes room again.
+    listed = await client.get(GARMENTS, headers=headers)
+    assert (
+        await client.delete(f"{GARMENTS}/{listed.json()['items'][0]['id']}", headers=headers)
+    ).status_code == 204
+    assert (
+        await client.post(GARMENTS, json=garment_body(brand="Now fits"), headers=headers)
+    ).status_code == 201

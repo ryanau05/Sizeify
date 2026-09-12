@@ -130,7 +130,11 @@ async def test_source_is_not_settable_by_the_client(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """``source`` drives extraction-quality metrics, so a client must not be
-    able to pass a signal off as NLP-extracted."""
+    able to pass a signal off as NLP-extracted.
+
+    Rejected rather than ignored: silently dropping it meant a client that
+    believed it was writing ``nlp_extracted`` rows never found out otherwise.
+    """
     headers, garment_id = await authed_garment(client, db_session)
 
     response = await client.post(
@@ -140,6 +144,22 @@ async def test_source_is_not_settable_by_the_client(
             "verdict": "preferred",
             "source": "nlp_extracted",
         },
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+    assert ["body", "source"] in [error["loc"] for error in response.json()["detail"]]
+
+
+async def test_source_is_user_added_when_not_supplied(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The v1 manual-entry path always lands as user-added."""
+    headers, garment_id = await authed_garment(client, db_session)
+
+    response = await client.post(
+        signals_url(garment_id),
+        json={"dimension": "chest", "verdict": "preferred"},
         headers=headers,
     )
 
