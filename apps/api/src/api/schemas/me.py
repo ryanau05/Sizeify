@@ -32,8 +32,15 @@ from api.schemas.enums import (
 class UserExport(BaseModel):
     """User-profile section of the export.
 
-    No ``password_hash``, no ``device_push_token`` — neither belongs in a
-    "the user's data" dump.
+    No ``password_hash`` — a credential is not "the user's data" in any
+    useful sense, and shipping one in a downloadable file is a liability.
+    No ``device_push_token`` either: it identifies a handset, is rotated by
+    the OS, and is meaningless outside our own push pipeline.
+
+    ``privacy_consent_accepted_at`` *is* included. It is personal data the
+    controller holds about the user, and GDPR Art. 15 covers it — a user
+    asking what we know about them is entitled to see the consent record
+    we are relying on.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -41,8 +48,23 @@ class UserExport(BaseModel):
     id: UUID
     email: EmailStr
     created_at: datetime
+    privacy_consent_accepted_at: datetime
     preferred_units: PreferredUnits
     stated_fit_preference: StatedFitPreference | None
+
+
+class OwnedGarmentExport(OwnedGarmentResponse):
+    """A closet row as it appears in the export.
+
+    Identical to the read-endpoint shape plus ``deleted_at``. The export
+    includes soft-deleted garments, because they are still stored and still
+    processed (historic recommendations cite them) — so Art. 15 covers
+    them too. Without the extra field a deleted garment would appear in the
+    dump indistinguishable from a live one, which would make the export
+    actively misleading rather than merely incomplete.
+    """
+
+    deleted_at: datetime | None
 
 
 class RecommendationExport(BaseModel):
@@ -80,6 +102,6 @@ class ExportResponse(BaseModel):
     export_schema_version: Literal["1"] = "1"
     exported_at: datetime
     user: UserExport
-    closet: list[OwnedGarmentResponse]
+    closet: list[OwnedGarmentExport]
     signals: list[FitSignalResponse]
     recommendations: list[RecommendationExport]
