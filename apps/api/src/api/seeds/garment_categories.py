@@ -35,9 +35,9 @@ MENS_BUTTON_DOWN_SHIRT_ID = "mens_button_down_shirt"
 #
 # Dimension names match the keys in ``BUTTON_DOWN_DIMENSION_WEIGHTS`` — they
 # are the single source of truth for the names referenced by fit signals,
-# matching, and UI labels. The ``_cm`` suffix is reserved for the
-# ``owned_garment.measurements`` JSONB keys (e.g. ``chest_cm``); fit
-# dimensions themselves are unitless identifiers.
+# matching, UI labels, and the keys of ``owned_garment.measurements``. The
+# unit lives inside each stored measurement object (``{"value": 54.0,
+# "unit": "cm", ...}``), so the dimension identifiers stay unitless.
 #
 # Ranges are the v1 confirmation-prompt bounds (PRD §5.2). Only the chest
 # range is explicit in the PRD; the rest are conservative starting estimates
@@ -48,7 +48,14 @@ _BUTTON_DOWN_MEASUREMENT_SCHEMA: dict[str, Any] = {
         {
             "name": "chest",
             "label": "Chest",
-            "guide": "pit-to-pit, doubled",
+            # Un-doubled: the flat pit-to-pit span. PRD §5.1's parenthetical
+            # says "doubled", but PRD §5.2 fixes the valid range at 35-80 cm
+            # and a doubled medium is ~108 cm, so the two cannot both hold.
+            # The range is the half that carries a number, the validator and
+            # the closet API enforce it, so it wins; the guide text used to
+            # instruct the opposite and would have had users entering values
+            # their own confirmation prompt rejects.
+            "guide": "pit-to-pit, laid flat (do not double)",
             "unit": "cm",
             "min_cm": 35.0,
             "max_cm": 80.0,

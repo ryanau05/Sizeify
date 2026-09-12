@@ -9,6 +9,16 @@ A size whose every dimension lands within the profile's ``spread`` (its
 preferred range) scores a distance of 0 — "sizes within range on all
 dimensions score highest" (PRD §6.4). Among such ties, the residual weighted
 absolute gap breaks the tie so the most centred size still wins.
+
+Nothing to rank on
+------------------
+A cold-start profile has no dimensions, so there is no evidence to score any
+size against. Every size then ties at distance 0, and ``within_range`` is
+reported as ``False`` rather than vacuously ``True``: "every dimension is
+inside the preferred range" must not be satisfiable by having no dimensions.
+The caller decides what to do about it — ``domain.recommendation`` clamps
+confidence for a cold-start profile, and PRD §13 asks the app to say "add a
+few shirts to your closet first" instead of showing a size at all.
 """
 
 from __future__ import annotations
@@ -52,7 +62,10 @@ class RankedSize:
 
     size_label: str
     distance: float  # weighted out-of-range distance (0 = ideal)
-    within_range: bool  # every weighted dimension inside spread
+    # True only when at least one dimension was scored AND every scored
+    # dimension landed inside the profile's spread. False for a profile with
+    # nothing to score — see "Nothing to rank on" in the module docstring.
+    within_range: bool
     per_dimension_deltas: Mapping[str, float]  # signed (candidate_effective − preferred), cm
     residual: float  # weighted |delta| tiebreaker
 
@@ -76,7 +89,8 @@ def match(fit_profile: FitProfile, brand_product: BrandProduct) -> list[RankedSi
     for size_label, chart in brand_product.size_chart.items():
         distance = 0.0
         residual = 0.0
-        within = True
+        # Vacuously-true would claim a fit we have no evidence for.
+        within = bool(scored_dims)
         deltas: dict[str, float] = {}
         for dim in scored_dims:
             if dim not in chart:
