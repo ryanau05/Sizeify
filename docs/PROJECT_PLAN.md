@@ -73,7 +73,7 @@ Indexes from PRD §8.2 go in the same migration. They are not optional; the shar
 
 Effort is given in solo-developer-weeks. Treat the numbers as relative sequencing aids, not deadlines. Many phases run in parallel; explicit dependencies are called out.
 
-### Phase 0 — Foundation (week 1)
+### Phase 0 — Foundation (week 1) — ✅ COMPLETE
 
 Goal: a runnable monorepo with the four-component skeleton, lint/format/test wired, CI green on an empty repo.
 
@@ -88,11 +88,42 @@ Deliverables:
 
 Exit criterion: a fresh clone + `make bootstrap` (or equivalent) gets a contributor to "all green" in under ten minutes.
 
-### Phase 1 — Backend core: schema, auth, closet CRUD (weeks 2–3)
+### Phase 1 — Backend core: schema, auth, closet CRUD (weeks 2–3) — ✅ COMPLETE (2026-09-10)
 
 Goal: a backend that can store a user's closet and run the matching engine in isolation.
 
-> **Domain core already landed:** TKT-P1-11/12/14/15 (`stretch`, `fit_profile`, `matching`, `recommendation`) were built ahead of schedule on the now-deleted capstone demo branch (archived as the tag `archive/demo-capstone`) and cherry-picked onto `main` with their unit tests. Treat them as done and build the closet/recommendation endpoints on top rather than rebuilding. The demo's throwaway pieces (the `DEMO_MODE` ASGI app and web client) were discarded with the branch.
+> **Status:** all 20 tickets in `PHASE_1_TICKETS.md` are delivered, and the exit
+> criterion passes as `apps/api/tests/integration/test_phase1_exit.py`. 442 tests,
+> 99% coverage on `api.domain`, ruff/mypy/alembic clean. Migrations `0001`–`0005`.
+>
+> The domain core (TKT-P1-11/12/14/15: `stretch`, `fit_profile`, `matching`,
+> `recommendation`) was originally built on the retired capstone demo branch
+> (archived as `archive/demo-capstone`) and cherry-picked onto `main`. Phase 1
+> completed it: the weak prior and use-case conditioning that TKT-P1-12 asks for
+> were missing, and `matching`/`recommendation` each carried a correctness bug the
+> ticket work surfaced.
+>
+> **Pre-landing review (2026-09-10).** A four-specialist review of the phase found
+> 42 issues; 10 were fixed before landing. In severity order: `PATCH
+> {"measurements": null}` permanently bricked an account (SQLAlchemy maps Python
+> `None` onto JSON null, so the NOT NULL constraint never fired and every later
+> read raised); Argon2 ran inline on the event loop; legacy measurement rows were
+> silently skipped rather than failing; refresh rotation was not a compare-and-swap,
+> so a stolen token could be raced into a second valid chain; email uniqueness was
+> case-sensitive in the database but case-insensitive in the lookup; the closet
+> list silently truncated at 100 while the export did not; an all-disliked closet
+> produced a recommendation missing a mandatory PRD §5.4 component; and the rate
+> limiter's key space was attacker-controlled. Migration `0005` and 16 regression
+> tests came out of it.
+>
+> The remaining findings are carried in `TODOS.md`, four of them P0. They are
+> reproduced, not speculative, and should close before the API takes real traffic.
+>
+> **Convention settled during the review:** chest is pit-to-pit **un-doubled**
+> (~54 cm). PRD §5.1's "pit-to-pit doubled" and PRD §5.2's 35–80 cm range
+> contradict each other; the range carries the number and the validator enforces
+> it, so it wins. The seed's guide text used to say "doubled" and would have had
+> users entering values their own confirmation prompt rejects.
 
 Deliverables:
 - Alembic migration creating all six entities from PRD §8 plus `recommendation.prompt_version`. Indexes from §8.2.
@@ -108,7 +139,7 @@ Deliverables:
 - Matching engine (PRD §6.4) implemented as a pure function over (fit profile, brand_product). Stretch adjustment (PRD §6.3) using v1's hand-tuned coefficients in `apps/api/src/api/domain/stretch.py`. Unit tests covering: in-range fit, weighted distance ranking, confidence < 60% returning two candidates per PRD §5.4, gap-to-second-best driving confidence.
 - GDPR/CCPA endpoints from day one (PRD §11): `GET /me/export` (full data dump as JSON), `DELETE /me` (cascade delete), consent flag on signup.
 
-Exit criterion: integration test seeds a closet with five garments, calls the matching engine with a fixture `brand_product`, asserts the recommendation matches a hand-computed expectation including all four mandatory components.
+Exit criterion: integration test seeds a closet with five garments, calls the matching engine with a fixture `brand_product`, asserts the recommendation matches a hand-computed expectation including all four mandatory components. **Met** by `apps/api/tests/integration/test_phase1_exit.py`: five garments (two preferred-fit, one slightly-tight chest, one slightly-loose body, one gym-tagged) produce size M at 0.78 confidence with six fit notes and two cited reference garments, all hand-derived in the file's `HAND-COMPUTED EXPECTATION` block. Mutating any of the four weighting constants fails it with a traceable number.
 
 ### Phase 2 — Scrapers: interface, ten modules, fixtures (weeks 3–4, parallelizable with Phase 1)
 

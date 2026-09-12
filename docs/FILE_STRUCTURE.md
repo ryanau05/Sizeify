@@ -65,6 +65,7 @@ apps/api/
 │       ├── main.py              # FastAPI app factory, middleware, route includes
 │       ├── config.py            # Pydantic Settings: DB URL, Redis, Anthropic key, JWT secret
 │       ├── deps.py              # FastAPI dependencies: db session, current user
+│       ├── rate_limit.py        # /auth/* token bucket (in-memory; Redis in Phase 8)
 │       ├── logging.py           # Structured JSON logging config
 │       │
 │       ├── models/              # SQLAlchemy ORM models, one file per entity
@@ -108,11 +109,13 @@ apps/api/
 │       │   ├── fit_profile.py   # PRD §6.2 Bayesian construction
 │       │   ├── matching.py      # PRD §6.4 weighted-distance + confidence
 │       │   ├── stretch.py       # PRD §6.3 hand-tuned coefficients (data + apply fn)
+│       │   ├── measurements.py  # Validates a measurement set against a category schema
 │       │   ├── confidence.py    # Calibration helpers, two-candidate split (§5.4)
 │       │   └── units.py         # cm-only invariant; conversion utilities
 │       │
 │       ├── services/            # Effectful orchestration: HTTP, queue, push.
 │       │   ├── __init__.py
+│       │   ├── fit_profile.py   # DB rows → ClosetSnapshot → PRD §6.2 construction
 │       │   ├── url_resolver.py  # Redirects + Insta/TikTok wrappers, 2s hard timeout
 │       │   ├── recommend.py     # Orchestrates the §9.2 hot path
 │       │   ├── push/
@@ -135,6 +138,11 @@ apps/api/
 │           └── jwt.py           # Issuance, rotation, verification
 │
 ├── llm/                         # LLM extraction service. Importable as `llm`.
+│   │                            # NOTE: not built yet (Phase 3). The prompt-version
+│   │                            # constants the API writes to
+│   │                            # `recommendation.prompt_version` live at
+│   │                            # `src/api/llm/versions.py` today (TKT-P1-16) —
+│   │                            # this service should import them, not redeclare.
 │   ├── __init__.py              # Public: extract_fit_signals(...)
 │   ├── client.py                # Anthropic SDK wrapper: retries, timeouts
 │   ├── extractor.py             # Prompt construction + schema validation
