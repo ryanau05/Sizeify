@@ -1,27 +1,91 @@
 """Request/response schemas for ``/auth/{signup,login,refresh}``.
 
-The auth flow itself lives in TKT-P1-07; the schemas land here so route
-handlers in later tickets can wire up against a frozen contract.
+Routes in ``api.routes.auth`` (TKT-P1-07) wire up against these.
 
 PRD §11 invariants enforced at the schema layer:
 
 * Signup captures a ``privacy_consent_accepted_at`` timestamp — GDPR/CCPA
   day-one requirement (PRD §11).
-* Passwords are at least 10 characters (PRD §11 + TKT-P1-07).
+* Signup passwords are at least 10 characters and draw on at least
+  ``MIN_PASSWORD_CLASSES`` character classes (PRD §11 + TKT-P1-07).
+* Emails are RFC-validated via ``EmailStr`` (``email-validator``, which
+  ships with ``fastapi[standard]``).
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+)
 
 from api.schemas.enums import StatedFitPreference
 
-# Min length enforced at the schema layer; argon2-based hashing (TKT-P1-05)
-# enforces no upper bound. Mixed-class enforcement (per TKT-P1-07) layers
-# on top via a validator in the route handler so signup-time errors carry
-# a useful per-rule message.
-_PasswordField = Annotated[str, Field(min_length=10, max_length=256)]
+MIN_PASSWORD_LENGTH = 10
+
+# Character classes a *new* password must draw on: lowercase, uppercase,
+# digit, other (symbols, punctuation, whitespace, non-ASCII). Three of the
+# four is the conventional "password complexity" bar and is what TKT-P1-07
+# means by "mixed classes". Kept as one named constant so tightening or
+# relaxing the rule is a one-line change with one place to re-document.
+MIN_PASSWORD_CLASSES = 3
+
+# Upper bound is a DoS guard, not a policy: argon2 cost is independent of
+# input length, but there is no reason to accept megabyte passwords.
+MAX_PASSWORD_LENGTH = 256
+
+
+def _character_classes(password: str) -> set[str]:
+    """Which of the four classes ``password`` draws on."""
+    classes: set[str] = set()
+    for char in password:
+        if char.islower():
+            classes.add("lower")
+        elif char.isupper():
+            classes.add("upper")
+        elif char.isdigit():
+            classes.add("digit")
+        else:
+            classes.add("other")
+    return classes
+
+
+def _validate_password_complexity(password: str) -> str:
+    """Enforce the mixed-class rule. Length is handled by ``Field``.
+
+    Raises ``ValueError``, which Pydantic surfaces as a per-field 422 entry
+    naming ``password`` — so the client can highlight the right input
+    rather than showing a whole-form error.
+    """
+    found = _character_classes(password)
+    if len(found) < MIN_PASSWORD_CLASSES:
+        raise ValueError(
+            f"password must combine at least {MIN_PASSWORD_CLASSES} of: "
+            "lowercase, uppercase, digit, symbol"
+        )
+    return password
+
+
+# New-password field: full policy. Used at signup (and by any future
+# password-change / reset endpoint).
+_NewPasswordField = Annotated[
+    str,
+    Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH),
+    AfterValidator(_validate_password_complexity),
+]
+
+# Login field: deliberately policy-free beyond a length cap. A password
+# that fails today's policy must produce 401 from the credential check,
+# not 422 from the schema — otherwise the error code tells an attacker
+# which guesses are worth making, and tightening the policy later would
+# lock existing users out at the schema layer instead of prompting a
+# reset.
+_SubmittedPasswordField = Annotated[str, Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)]
 
 
 class SignupRequest(BaseModel):
@@ -33,19 +97,34 @@ class SignupRequest(BaseModel):
     """
 
     email: EmailStr
-    password: _PasswordField
-    # GDPR/CCPA: explicit consent timestamp, recorded server-side as well
-    # so a missing client clock doesn't silently degrade the compliance
-    # trail.
+    password: _NewPasswordField
+    # GDPR/CCPA: explicit consent timestamp. Required — omitting it is a
+    # 422, which is the point: there is no code path that creates a user
+    # without a consent record (PRD §11).
     privacy_consent_accepted_at: datetime
     stated_fit_preference: StatedFitPreference | None = None
+
+    @field_validator("privacy_consent_accepted_at")
+    @classmethod
+    def _require_utc(cls, value: datetime) -> datetime:
+        """Normalize the consent timestamp to tz-aware UTC.
+
+        The column is ``TIMESTAMP WITH TIME ZONE``; handing asyncpg a naive
+        datetime is an error waiting to happen. Naive input is read as UTC
+        rather than rejected — a client that sends ``2026-09-09T12:00:00``
+        has a clock-formatting bug, not a missing consent record, and
+        failing the signup over it would lose the consent we just got.
+        """
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 class LoginRequest(BaseModel):
     """``POST /auth/login`` request body."""
 
     email: EmailStr
-    password: _PasswordField
+    password: _SubmittedPasswordField
 
 
 class RefreshRequest(BaseModel):

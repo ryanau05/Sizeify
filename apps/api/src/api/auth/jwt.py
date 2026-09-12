@@ -245,5 +245,13 @@ async def rotate(refresh_token: str, repo: RefreshTokenRepository) -> tuple[str,
         await repo.revoke_all_for_user(row.user_id)
         raise ReusedRefreshTokenError(row.user_id)
 
-    await repo.mark_revoked(row.id)
+    if not await repo.mark_revoked(row.id):
+        # Lost the compare-and-swap: a concurrent request revoked this same
+        # row between our SELECT and our UPDATE. That is the replay signal
+        # arriving as a race rather than as a second request, and it gets
+        # the identical response — otherwise an attacker who races the
+        # legitimate client walks away with a working parallel chain.
+        await repo.revoke_all_for_user(row.user_id)
+        raise ReusedRefreshTokenError(row.user_id)
+
     return await issue_pair(row.user_id, repo)

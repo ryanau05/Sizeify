@@ -1,5 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from api import rate_limit
+
 
 class Settings(BaseSettings):
     """Application settings.
@@ -31,6 +33,15 @@ class Settings(BaseSettings):
     # we don't need); the JWT issuer wraps these as ``timedelta`` at the boundary.
     access_token_ttl: int = 15 * 60
     refresh_token_ttl: int = 30 * 24 * 60 * 60
+
+    # ``/auth/*`` rate limit (TKT-P1-07): ``auth_rate_limit_capacity``
+    # requests of burst per client IP per endpoint, refilling over
+    # ``auth_rate_limit_window_seconds``. Surfaced as settings so the
+    # deployment can tighten them without a code change, and so tests can
+    # exercise the 429 path without issuing the production budget's worth
+    # of requests. See ``api.rate_limit`` for the per-process caveat.
+    auth_rate_limit_capacity: int = rate_limit.DEFAULT_CAPACITY
+    auth_rate_limit_window_seconds: int = rate_limit.DEFAULT_WINDOW_SECONDS
 
 
 def get_settings() -> Settings:
