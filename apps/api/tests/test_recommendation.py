@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from api.domain.fit_profile import DimensionStat, FitProfile, ReferenceGarment
-from api.domain.matching import BrandProduct, MissingDimensionError
+from api.domain.matching import BrandProduct, MissingDimensionError, match
 from api.domain.recommendation import (
     COLD_START_CONFIDENCE_CAP,
     CONFIDENCE_TWO_CANDIDATE_THRESHOLD,
@@ -28,10 +28,10 @@ from api.schemas.enums import OverallRating, ProfileMaturity
 CATEGORY = "mens_button_down_shirt"
 
 LOVED = ReferenceGarment(
-    "Uniqlo Oxford", "uniqlo", "M", OverallRating.LOVE, {"chest": 107.0, "shoulder_width": 46.0}, ()
+    "Uniqlo Oxford", "uniqlo", "M", OverallRating.LOVE, {"chest": 54, "shoulder_width": 46.0}, ()
 )
 TOLERATED = ReferenceGarment(
-    "Old Gap", "gap", "L", OverallRating.TOLERABLE, {"chest": 113.0, "shoulder_width": 48.0}, ()
+    "Old Gap", "gap", "L", OverallRating.TOLERABLE, {"chest": 60, "shoulder_width": 48.0}, ()
 )
 
 
@@ -46,7 +46,7 @@ def profile(
         maturity=maturity,
         sample_size=15 if maturity is ProfileMaturity.MATURE else 5,
         dimensions={
-            "chest": DimensionStat(107.0, spread, 5),
+            "chest": DimensionStat(54, spread, 5),
             "shoulder_width": DimensionStat(46.0, spread, 5),
         },
         references=references,
@@ -58,9 +58,9 @@ SEPARATED = BrandProduct(
     brand="jcrew",
     product_name="Bowery Wrinkle-Free Dress Shirt",
     size_chart={
-        "S": {"chest": 95.0, "shoulder_width": 42.0},
-        "M": {"chest": 107.0, "shoulder_width": 46.0},
-        "XL": {"chest": 120.0, "shoulder_width": 51.0},
+        "S": {"chest": 42, "shoulder_width": 42.0},
+        "M": {"chest": 54, "shoulder_width": 46.0},
+        "XL": {"chest": 67, "shoulder_width": 51.0},
     },
 )
 
@@ -69,8 +69,8 @@ TOSS_UP = BrandProduct(
     brand="everlane",
     product_name="Relaxed Poplin",
     size_chart={
-        "M": {"chest": 104.0, "shoulder_width": 44.5},
-        "L": {"chest": 110.0, "shoulder_width": 47.5},
+        "M": {"chest": 51, "shoulder_width": 44.5},
+        "L": {"chest": 57, "shoulder_width": 47.5},
     },
 )
 
@@ -165,8 +165,8 @@ def test_alternate_tradeoff_says_slimmer_when_the_runner_up_is_smaller() -> None
         "b",
         "p",
         {
-            "L": {"chest": 110.0, "shoulder_width": 47.5},
-            "M": {"chest": 103.5, "shoulder_width": 44.0},
+            "L": {"chest": 57, "shoulder_width": 47.5},
+            "M": {"chest": 50.5, "shoulder_width": 44.0},
         },
     )
     rec = recommend(profile(ProfileMaturity.DEVELOPING, spread=0.5), slimmer_runner_up)
@@ -180,7 +180,7 @@ def test_no_alternate_when_the_chart_offers_only_one_size() -> None:
     candidate to offer, and inventing one is not an option."""
     rec = recommend(
         profile(ProfileMaturity.COLD_START),
-        BrandProduct("b", "p", {"M": {"chest": 107.0, "shoulder_width": 46.0}}),
+        BrandProduct("b", "p", {"M": {"chest": 54, "shoulder_width": 46.0}}),
     )
 
     assert rec.confidence < CONFIDENCE_TWO_CANDIDATE_THRESHOLD
@@ -230,7 +230,7 @@ def test_empty_profile_refuses_rather_than_guessing() -> None:
     """
     empty = FitProfile(CATEGORY, ProfileMaturity.COLD_START, 0, {}, ())
     product = BrandProduct(
-        "jcrew", "Bowery", {"XL": {"chest": 120.0}, "S": {"chest": 96.0}, "M": {"chest": 107.0}}
+        "jcrew", "Bowery", {"XL": {"chest": 67}, "S": {"chest": 43}, "M": {"chest": 54}}
     )
 
     with pytest.raises(InsufficientClosetDataError) as exc:
@@ -265,16 +265,16 @@ def test_confidence_rises_with_the_gap_to_the_runner_up() -> None:
         "b",
         "p",
         {
-            "M": {"chest": 107.0, "shoulder_width": 46.0},
-            "L": {"chest": 109.0, "shoulder_width": 47.0},
+            "M": {"chest": 54, "shoulder_width": 46.0},
+            "L": {"chest": 56, "shoulder_width": 47.0},
         },
     )
     far_rivals = BrandProduct(
         "b",
         "p",
         {
-            "M": {"chest": 107.0, "shoulder_width": 46.0},
-            "XXL": {"chest": 130.0, "shoulder_width": 56.0},
+            "M": {"chest": 54, "shoulder_width": 46.0},
+            "XXL": {"chest": 77, "shoulder_width": 56.0},
         },
     )
     prof = profile(ProfileMaturity.MATURE)
@@ -284,8 +284,8 @@ def test_confidence_rises_with_the_gap_to_the_runner_up() -> None:
 
 def test_confidence_falls_as_the_best_size_drifts_out_of_range() -> None:
     prof = profile(ProfileMaturity.MATURE, spread=1.0)
-    on_target = BrandProduct("b", "p", {"M": {"chest": 107.0, "shoulder_width": 46.0}})
-    off_target = BrandProduct("b", "p", {"M": {"chest": 118.0, "shoulder_width": 51.0}})
+    on_target = BrandProduct("b", "p", {"M": {"chest": 54, "shoulder_width": 46.0}})
+    off_target = BrandProduct("b", "p", {"M": {"chest": 65, "shoulder_width": 51.0}})
 
     assert recommend(prof, off_target).confidence < recommend(prof, on_target).confidence
 
@@ -315,11 +315,9 @@ def test_references_are_ranked_against_the_recommended_size() -> None:
     """
     prof = profile(ProfileMaturity.MATURE)
 
-    on_size = recommend(
-        prof, BrandProduct("b", "p", {"M": {"chest": 107.0, "shoulder_width": 46.0}})
-    )
+    on_size = recommend(prof, BrandProduct("b", "p", {"M": {"chest": 54, "shoulder_width": 46.0}}))
     oversize = recommend(
-        prof, BrandProduct("b", "p", {"XXL": {"chest": 125.0, "shoulder_width": 53.0}})
+        prof, BrandProduct("b", "p", {"XXL": {"chest": 72, "shoulder_width": 53.0}})
     )
 
     assert [ref.label for ref in on_size.reference_garments] == ["Uniqlo Oxford", "Old Gap"]
@@ -328,10 +326,10 @@ def test_references_are_ranked_against_the_recommended_size() -> None:
 
 def test_loved_garments_outrank_equally_close_ones() -> None:
     near_loved = ReferenceGarment(
-        "Loved", "a", "M", OverallRating.LOVE, {"chest": 107.0, "shoulder_width": 46.0}, ()
+        "Loved", "a", "M", OverallRating.LOVE, {"chest": 54, "shoulder_width": 46.0}, ()
     )
     near_unrated = ReferenceGarment(
-        "Unrated", "b", "M", None, {"chest": 107.0, "shoulder_width": 46.0}, ()
+        "Unrated", "b", "M", None, {"chest": 54, "shoulder_width": 46.0}, ()
     )
     rec = recommend(
         profile(ProfileMaturity.MATURE, references=(near_unrated, near_loved)), SEPARATED
@@ -353,7 +351,7 @@ def test_at_most_two_reference_garments_are_cited() -> None:
     not a closet dump."""
     many = tuple(
         ReferenceGarment(
-            f"g{i}", "b", "M", OverallRating.LIKE, {"chest": 107.0 + i, "shoulder_width": 46.0}, ()
+            f"g{i}", "b", "M", OverallRating.LIKE, {"chest": 54 + i, "shoulder_width": 46.0}, ()
         )
         for i in range(6)
     )
@@ -370,8 +368,8 @@ def test_at_most_two_reference_garments_are_cited() -> None:
 def test_fit_notes_describe_direction_relative_to_the_preference() -> None:
     prof = profile(ProfileMaturity.MATURE, spread=1.0)
 
-    roomy = recommend(prof, BrandProduct("b", "p", {"L": {"chest": 112.0, "shoulder_width": 46.0}}))
-    slim = recommend(prof, BrandProduct("b", "p", {"S": {"chest": 102.0, "shoulder_width": 46.0}}))
+    roomy = recommend(prof, BrandProduct("b", "p", {"L": {"chest": 59, "shoulder_width": 46.0}}))
+    slim = recommend(prof, BrandProduct("b", "p", {"S": {"chest": 49, "shoulder_width": 46.0}}))
 
     assert roomy.primary.fit_notes[0] == "Chest: about 5 cm roomier than you prefer."
     assert slim.primary.fit_notes[0] == "Chest: about 5 cm slimmer/shorter than you prefer."
@@ -387,7 +385,16 @@ def test_fit_notes_describe_direction_relative_to_the_preference() -> None:
 def test_wire_shape_of_a_confident_recommendation() -> None:
     wire = recommend(profile(ProfileMaturity.MATURE), SEPARATED).to_wire()
 
-    assert set(wire) == {"brand", "product_name", "primary", "confidence", "reference_garments"}
+    assert set(wire) == {
+        "brand",
+        "product_name",
+        "primary",
+        "confidence",
+        "reference_garments",
+        # PRD §6.4 requires the assumed use case to be stated, not silently
+        # applied, so it is always present — ``None`` means unconditioned.
+        "use_case_assumed",
+    }
     assert set(wire["primary"]) == {"size_label", "fit_notes"}  # no tradeoff key when unset
     assert "alternate" not in wire
     for ref in wire["reference_garments"]:
@@ -411,7 +418,7 @@ def test_incomplete_size_chart_propagates_the_matching_error() -> None:
     """A broken scraper fixture must surface as itself, not as a
     recommendation built from whatever dimensions happened to be present."""
     with pytest.raises(MissingDimensionError):
-        recommend(profile(), BrandProduct("b", "p", {"M": {"chest": 107.0}}))
+        recommend(profile(), BrandProduct("b", "p", {"M": {"chest": 54}}))
 
 
 def test_refuses_when_there_are_no_citable_reference_garments() -> None:
@@ -430,3 +437,89 @@ def test_refuses_when_there_are_no_citable_reference_garments() -> None:
 
     with pytest.raises(InsufficientClosetDataError, match="reference garments"):
         recommend(profile_without_refs, BrandProduct("b", "p", {"M": {"chest": 54.0}}))
+
+
+# ---------------------------------------------------------------------------
+# Use-case conditioning (PRD §6.4).
+# ---------------------------------------------------------------------------
+
+
+def _profile_with_gym_variant() -> FitProfile:
+    """Chest runs 4 cm roomier at the gym than it does by default."""
+    return FitProfile(
+        category_id=CATEGORY,
+        maturity=ProfileMaturity.MATURE,
+        sample_size=6,
+        dimensions={"chest": DimensionStat(54.0, 0.5, 6)},
+        references=(
+            ReferenceGarment("Gym tee", "b", "M", OverallRating.LOVE, {"chest": 54.0}, ("gym",)),
+        ),
+        use_case_variants={"gym": {"chest": DimensionStat(58.0, 0.5, 6)}},
+    )
+
+
+SIZES = BrandProduct("b", "p", {"M": {"chest": 54.0}, "L": {"chest": 58.0}})
+
+
+def test_conditioning_on_a_use_case_changes_the_recommended_size() -> None:
+    """The whole point of the variants, which nothing consumed until now:
+    a profile that wants more room at the gym should get a bigger shirt.
+
+    Exercised through ``match`` rather than ``recommend`` because ``recommend``
+    with no hint falls back to the most common use case (PRD §6.4), which in a
+    profile with one variant is that variant — correct behaviour, but it would
+    hide the unconditioned baseline this test is comparing against.
+    """
+    profile_ = _profile_with_gym_variant()
+
+    unconditioned = match(profile_, SIZES)
+    gym = match(profile_, SIZES, use_case="gym")
+
+    assert unconditioned[0].size_label == "M"
+    assert gym[0].size_label == "L"
+
+
+def test_no_hint_falls_back_to_the_most_common_use_case() -> None:
+    """PRD §6.4: "the system uses the user's most common use case as the
+    default but explicitly notes which use case was assumed"."""
+    result = recommend(_profile_with_gym_variant(), SIZES)
+
+    assert result.use_case_assumed == "gym"
+    assert result.primary.size_label == "L"
+
+
+def test_the_assumed_use_case_is_stated() -> None:
+    """PRD §6.4: the system "explicitly notes which use case was assumed"."""
+    assert recommend(_profile_with_gym_variant(), SIZES, use_case="gym").use_case_assumed == "gym"
+
+
+def test_a_hint_with_no_variant_conditions_nothing_and_says_so() -> None:
+    """Claiming a use case we have no evidence for would mislabel an
+    unconditioned recommendation as a conditioned one."""
+    result = recommend(_profile_with_gym_variant(), SIZES, use_case="scuba")
+
+    assert result.use_case_assumed is None
+    assert result.primary.size_label == "M"
+
+
+def test_the_most_common_use_case_is_assumed_without_a_hint() -> None:
+    """PRD §6.4's fallback. Only use cases that have a variant are candidates:
+    conditioning on one the user tags but never gave a differing verdict for
+    would return the unconditioned profile under a misleading label."""
+    profile_ = _profile_with_gym_variant()
+
+    assert profile_.default_use_case() == "gym"
+    assert recommend(profile_, SIZES).use_case_assumed == "gym"
+
+
+def test_a_profile_without_variants_assumes_nothing() -> None:
+    assert profile(ProfileMaturity.MATURE).default_use_case() is None
+    assert recommend(profile(ProfileMaturity.MATURE), SEPARATED).use_case_assumed is None
+
+
+def test_fit_notes_describe_the_variant_that_was_matched() -> None:
+    """The notes have to narrate the same numbers the ranking used, or the
+    reasoning contradicts the size."""
+    gym = recommend(_profile_with_gym_variant(), SIZES, use_case="gym")
+
+    assert gym.primary.fit_notes == ["Chest: right in your preferred range."]

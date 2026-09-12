@@ -28,7 +28,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from api.domain.fit_profile import FitProfile
+from api.domain.fit_profile import DimensionStat, FitProfile
 from api.domain.fit_profile import ReferenceGarment as _RefGarment
 from api.domain.matching import BrandProduct, RankedSize, match
 from api.schemas.enums import OverallRating, ProfileMaturity
@@ -121,6 +121,10 @@ class Recommendation:
     confidence: float
     reference_garments: Sequence[ReferenceGarmentOut] = field(default_factory=tuple)
     alternate: SizeCandidate | None = None
+    #: The use case this recommendation conditioned on, or ``None`` for the
+    #: unconditioned profile. PRD §6.4 requires it to be stated rather than
+    #: silently assumed, and ``recommendation.use_case_assumed`` persists it.
+    use_case_assumed: str | None = None
 
     def to_wire(self) -> dict[str, object]:
         out: dict[str, object] = {
@@ -129,6 +133,7 @@ class Recommendation:
             "primary": self.primary.to_wire(),
             "confidence": self.confidence,
             "reference_garments": [r.to_wire() for r in self.reference_garments],
+            "use_case_assumed": self.use_case_assumed,
         }
         if self.alternate is not None:
             out["alternate"] = self.alternate.to_wire()
@@ -144,11 +149,16 @@ def _fit_note(dim: str, delta: float, spread: float) -> str:
     return f"{label}: about {abs(delta):.0f} cm slimmer/shorter than you prefer."
 
 
-def _fit_notes_for(fit_profile: FitProfile, size: RankedSize) -> list[str]:
+def _fit_notes_for(dimensions: Mapping[str, DimensionStat], size: RankedSize) -> list[str]:
+    """Narrate each scored dimension against the profile the match used.
+
+    Takes the dimension map rather than the whole profile because a
+    use-case-conditioned match scores against a variant, and the notes have to
+    describe the same numbers the ranking did.
+    """
     notes: list[str] = []
     for dim, delta in size.per_dimension_deltas.items():
-        spread = fit_profile.dimensions[dim].spread_cm
-        notes.append(_fit_note(dim, delta, spread))
+        notes.append(_fit_note(dim, delta, dimensions[dim].spread_cm))
     return notes
 
 
@@ -181,6 +191,13 @@ def _relevance(ref: _RefGarment, size: RankedSize, fit_profile: FitProfile) -> f
 def _reference_garments_for(
     fit_profile: FitProfile, size: RankedSize, limit: int = 2
 ) -> list[ReferenceGarmentOut]:
+    # No secondary key on purpose. ``sorted`` is stable and the input order is
+    # already deterministic — ``references`` comes from the closet in
+    # ``list_for_user`` order, which is ``created_at`` then id — so equally
+    # relevant garments break toward the one the user has owned longest. That
+    # is reproducible and meaningful; sorting on the label instead would have
+    # been reproducible and arbitrary ("Lululemon" before "Uniqlo" says
+    # nothing about which shirt informed the recommendation).
     refs = sorted(fit_profile.references, key=lambda r: _relevance(r, size, fit_profile))
     out: list[ReferenceGarmentOut] = []
     for ref in refs[:limit]:
@@ -215,9 +232,26 @@ def _confidence(fit_profile: FitProfile, best: RankedSize, second: RankedSize | 
     return round(max(0.0, min(1.0, base)), 2)
 
 
-def recommend(fit_profile: FitProfile, brand_product: BrandProduct) -> Recommendation:
-    """Produce a size recommendation with all four PRD §5.4 components."""
-    ranked = match(fit_profile, brand_product)
+def recommend(
+    fit_profile: FitProfile,
+    brand_product: BrandProduct,
+    *,
+    use_case: str | None = None,
+) -> Recommendation:
+    """Produce a size recommendation with all four PRD §5.4 components.
+
+    ``use_case`` is the caller's hint about intent — the share-sheet path
+    derives it from the product URL (PRD §6.4). With no hint, the user's most
+    common use case is assumed, and either way the result records which one
+    via ``use_case_assumed`` so the reasoning can say so out loud.
+    """
+    assumed = use_case if use_case is not None else fit_profile.default_use_case()
+    # A hint we have no variant for conditions nothing, so claiming it would
+    # mislabel an unconditioned recommendation.
+    if assumed is not None and assumed not in fit_profile.use_case_variants:
+        assumed = None
+
+    ranked = match(fit_profile, brand_product, use_case=assumed)
     if not ranked:
         raise ValueError("brand_product has no sizes to rank")
 
@@ -245,9 +279,10 @@ def recommend(fit_profile: FitProfile, brand_product: BrandProduct) -> Recommend
     second = ranked[1] if len(ranked) > 1 else None
     confidence = _confidence(fit_profile, best, second)
 
+    dimensions = fit_profile.dimensions_for(assumed)
     primary = SizeCandidate(
         size_label=best.size_label,
-        fit_notes=_fit_notes_for(fit_profile, best),
+        fit_notes=_fit_notes_for(dimensions, best),
     )
     references = _reference_garments_for(fit_profile, best)
 
@@ -270,7 +305,7 @@ def recommend(fit_profile: FitProfile, brand_product: BrandProduct) -> Recommend
         )
         alternate = SizeCandidate(
             size_label=second.size_label,
-            fit_notes=_fit_notes_for(fit_profile, second),
+            fit_notes=_fit_notes_for(dimensions, second),
             tradeoff=f"A {direction} alternative if you prefer that over the {best.size_label}.",
         )
 
@@ -281,4 +316,5 @@ def recommend(fit_profile: FitProfile, brand_product: BrandProduct) -> Recommend
         confidence=confidence,
         reference_garments=references,
         alternate=alternate,
+        use_case_assumed=assumed,
     )

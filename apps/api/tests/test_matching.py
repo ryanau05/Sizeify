@@ -46,14 +46,14 @@ def labels(ranked: list[RankedSize]) -> list[str]:
 
 def test_in_range_size_ranks_first() -> None:
     ranked = match(
-        profile(spread=2.0, chest=107.0, shoulder_width=46.0),
+        profile(spread=2.0, chest=54, shoulder_width=46.0),
         BrandProduct(
             brand="jcrew",
             product_name="Bowery",
             size_chart={
-                "S": {"chest": 102.0, "shoulder_width": 44.0},
-                "M": {"chest": 107.0, "shoulder_width": 46.0},
-                "L": {"chest": 112.0, "shoulder_width": 48.0},
+                "S": {"chest": 49, "shoulder_width": 44.0},
+                "M": {"chest": 54, "shoulder_width": 46.0},
+                "L": {"chest": 59, "shoulder_width": 48.0},
             },
         ),
     )
@@ -170,25 +170,25 @@ def test_weights_table_is_the_one_from_tkt_p1_02() -> None:
 
 def test_stretch_changes_which_size_wins() -> None:
     """The acceptance case: the same chart ranks differently once the fabric's
-    stretch is accounted for. Preferred chest 110.0:
+    stretch is accounted for. Preferred chest 57.0:
 
-      no stretch  → S |104.0 - 110| = 6.0 ; M |111.0 - 110| = 1.0  → M
-      high (+3.5) → S |107.5 - 110| = 2.5 ; M |114.5 - 110| = 4.5  → S
+      no stretch  → S |51 - 57| = 6.0 ; M |58 - 57| = 1.0  → M
+      high (+3.5) → S |54.5 - 57| = 2.5 ; M |61.5 - 57| = 4.5  → S
 
     Stretch only ever adds room, so it can only ever favour the smaller size —
     which is exactly the failure mode it exists to prevent (recommending a
     size up in a fabric that already gives).
     """
-    chart = {"S": {"chest": 104.0}, "M": {"chest": 111.0}}
-    prof = profile(chest=110.0)
+    chart = {"S": {"chest": 51}, "M": {"chest": 58}}
+    prof = profile(chest=57)
 
     assert labels(match(prof, BrandProduct("b", "p", chart, StretchLevel.NONE))) == ["M", "S"]
     assert labels(match(prof, BrandProduct("b", "p", chart, StretchLevel.HIGH))) == ["S", "M"]
 
 
 def test_stretch_shifts_every_delta_by_the_level_offset() -> None:
-    chart = {"M": {"chest": 107.0}}
-    prof = profile(chest=110.0)
+    chart = {"M": {"chest": 54}}
+    prof = profile(chest=57)
 
     none = match(prof, BrandProduct("b", "p", chart, StretchLevel.NONE))[0]
     moderate = match(prof, BrandProduct("b", "p", chart, StretchLevel.MODERATE))[0]
@@ -201,8 +201,8 @@ def test_stretch_shifts_every_delta_by_the_level_offset() -> None:
 def test_unknown_stretch_level_is_treated_as_none() -> None:
     """A scraper that cannot determine the fabric must not make the engine
     assume stretch the garment may not have."""
-    chart = {"M": {"chest": 107.0}}
-    prof = profile(chest=110.0)
+    chart = {"M": {"chest": 54}}
+    prof = profile(chest=57)
 
     unknown = match(prof, BrandProduct("b", "p", chart, None))[0]
     explicit_none = match(prof, BrandProduct("b", "p", chart, StretchLevel.NONE))[0]
@@ -218,8 +218,8 @@ def test_unknown_stretch_level_is_treated_as_none() -> None:
 def test_missing_dimension_raises_typed_error() -> None:
     with pytest.raises(MissingDimensionError) as exc:
         match(
-            profile(chest=107.0, shoulder_width=46.0),
-            BrandProduct("jcrew", "p", {"M": {"chest": 107.0}}),
+            profile(chest=54, shoulder_width=46.0),
+            BrandProduct("jcrew", "p", {"M": {"chest": 54}}),
         )
 
     # The message has to be enough to chase down a broken scraper fixture.
@@ -269,7 +269,7 @@ def test_cold_start_profile_never_claims_a_size_is_within_range() -> None:
     """
     ranked = match(
         profile(maturity=ProfileMaturity.COLD_START),
-        BrandProduct("b", "p", {"XL": {"chest": 120.0}, "S": {"chest": 96.0}}),
+        BrandProduct("b", "p", {"XL": {"chest": 67}, "S": {"chest": 43}}),
     )
 
     assert [size.within_range for size in ranked] == [False, False]
@@ -296,3 +296,37 @@ def test_ranking_is_deterministic() -> None:
     )
 
     assert match(prof, product) == match(prof, product)
+
+
+def test_ranking_is_independent_of_size_chart_key_order() -> None:
+    """Ties must not depend on dict iteration order.
+
+    ``size_chart`` arrives from the ``brand_product`` JSONB column, and
+    Postgres does not preserve input key order (jsonb sorts by key length then
+    bytewise). Before the explicit tiebreak, a freshly scraped chart and the
+    same chart read back could rank two equally-scoring sizes differently — so
+    the recommended size changed for no reason the user could see.
+    """
+    import itertools
+
+    prof = profile(chest=54.0)
+    chart = {"S": {"chest": 50.0}, "M": {"chest": 58.0}}  # both 4 cm out: exact tie
+
+    rankings = {
+        tuple(labels(match(prof, BrandProduct("b", "p", {k: chart[k] for k in order}))))
+        for order in itertools.permutations(chart)
+    }
+
+    assert len(rankings) == 1, f"ranking varied with key order: {rankings}"
+
+
+def test_exact_ties_break_toward_the_smaller_garment() -> None:
+    """When the model has no preference the tiebreak only has to be
+    reproducible, but it may as well read as a rule. Sorting on the label
+    would have been reproducible and nonsense — "L" sorts before "M"."""
+    prof = profile(chest=54.0)
+
+    ranked = match(prof, BrandProduct("b", "p", {"L": {"chest": 58.0}, "S": {"chest": 50.0}}))
+
+    assert [size.distance for size in ranked] == [ranked[0].distance] * 2, "not a real tie"
+    assert labels(ranked) == ["S", "L"]

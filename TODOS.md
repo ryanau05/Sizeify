@@ -5,56 +5,6 @@ fixed in that pass; these are the ones that were found, verified, and
 deliberately left. Each was reproduced against the running app or the dev
 database, so none of them are speculative.
 
-## Backend — correctness and consistency
-
-### Wire use-case conditioning into matching
-
-**What:** Have `match()` select a `use_case_variant` from the profile, and have `recommend()` record which one it assumed.
-
-**Why:** PRD §6.4 requires the engine to condition on intent and to note the use case it assumed. `FitProfile.use_case_variants` is built (TKT-P1-12), serialized over the wire, and consumed by nothing: `matching.match()` reads only `fit_profile.dimensions`, and `use_case_assumed` is `None` on every persisted row. The feature looks live and is not.
-
-**Context:** `domain/matching.py:86` and `domain/recommendation.py`. `RecommendationRepository.create_from` already accepts `use_case_assumed` as a parameter for this. The selection signal (URL hints, most common use case) is PRD §6.4 and lands with the share-sheet flow in Phase 6.
-
-**Effort:** M
-**Priority:** P1
-**Depends on:** None
-
-### Make `transaction()` re-entrant
-
-**What:** Use `session.begin_nested()` when a transaction is already active, and move `await session.commit()` inside the `try`.
-
-**Why:** The helper was changed during TKT-P1-07 to rely on SQLAlchemy autobegin. That made it non-re-entrant: a nested `async with transaction(s)` commits and ends the outer transaction at the inner block's exit, so an outer failure rolls back only the tail while the inner work stays permanently committed. `session.begin()` raised loudly on this; autobegin is silent.
-
-**Context:** `repositories/base.py::transaction`. Nothing nests today, so this is latent. The risk is Phase 6's share-sheet path, which composes profile build, recommendation persist, and push dispatch. The commit also sits outside the `try`, so a commit-time failure relies on `deps.get_session`'s rollback two layers up. Add a test that nests two blocks and asserts the inner write rolls back.
-
-**Effort:** S
-**Priority:** P1
-**Depends on:** None
-
-### Deterministic tie-breaking in matching
-
-**What:** Append `size_label` as a final sort key in `match()`, and `garment_id` in `_reference_garments_for`.
-
-**Why:** Ties currently resolve to `size_chart` dict insertion order. Once charts are loaded from the `brand_product` JSONB column, key order is whatever Postgres chose (jsonb sorts by length then bytewise), so the recommended size can change between a fresh scrape and a round-tripped one. `distance` and `residual` are both rounded to 4 places, which makes exact ties more likely than raw floats would.
-
-**Context:** `domain/matching.py:120`. `recommendation.py` already guards the analogous no-dimensions case for exactly this reason. Add a test that shuffles `size_chart` key order and asserts an identical `Recommendation`.
-
-**Effort:** S
-**Priority:** P1
-**Depends on:** None
-
-### Rescale the domain unit tests to the agreed chest convention
-
-**What:** Convert the 105–107 cm chest values in `test_matching.py` and `test_recommendation.py` to the un-doubled ~54 cm scale.
-
-**Why:** The review settled that chest is pit-to-pit **un-doubled** (PRD §5.2's 35–80 range, which the validator and the closet API enforce). These tests predate that and use the doubled scale, so they now contradict the convention they are meant to exercise. They pass because they are internally consistent, which is exactly what makes them misleading.
-
-**Context:** Left out of the review pass because rescaling means recomputing every hand-derived expected value, which deserves its own focused change rather than riding along with bug fixes. `tests/_factories.py` and all closet API tests already use 54.
-
-**Effort:** M
-**Priority:** P1
-**Depends on:** None
-
 ### Per-user rate limiting beyond `/auth/*`
 
 **What:** Add a second limiter instance keyed on the authenticated user id for the closet and `/me` routers, plus a cap on closet size.
@@ -178,6 +128,13 @@ database, so none of them are speculative.
 **Depends on:** None
 
 ## Completed
+
+**2026-09-11 — all four P1s closed.**
+
+- **Use-case conditioning wired through** — `match()` and `recommend()` take a `use_case`, `FitProfile.dimensions_for()` selects the variant, and `default_use_case()` implements PRD §6.4's "most common use case" fallback. `Recommendation.use_case_assumed` states what it conditioned on, and `create_from` records it by default rather than making the caller repeat it. A hint with no variant conditions nothing and says so, instead of mislabelling an unconditioned recommendation.
+- **`transaction()` is re-entrant** — an inner block opens a SAVEPOINT so it can fail independently, and only the outermost exit commits. Depth is tracked on `session.info` rather than inferred from `in_transaction()`, because autobegin makes that true as soon as a handler reads anything (`PATCH /closet/garments/{id}` does). The commit moved inside the `try`, so a commit-time failure rolls back here rather than relying on `get_session` two layers up.
+- **Deterministic tie-breaking** — `match()` breaks exact ties on the size's own summed measurements, then the label. Sorting on the label alone would have been reproducible and nonsense ("L" sorts before "M"). The reference-garment sort was left alone on purpose: its input is already deterministic (closet order, oldest first), and adding a label tiebreak there replaced a meaningful order with an alphabetical one.
+- **Domain tests rescaled** — chest values shifted from the doubled ~107 scale to the agreed un-doubled ~54, chosen so every delta is preserved exactly and no hand-computed expectation had to be re-derived. Every value now sits inside the seeded 35-80 range the API enforces.
 
 **2026-09-11 — all four P0s closed.**
 

@@ -271,6 +271,38 @@ class FitProfile:
     # engine falls back to ``dimensions`` for anything else.
     use_case_variants: Mapping[str, Mapping[str, DimensionStat]] = field(default_factory=dict)
 
+    def default_use_case(self) -> str | None:
+        """The use case to assume when the caller supplies no hint.
+
+        PRD §6.4: "Otherwise, the system uses the user's most common use case
+        as the default but explicitly notes which use case was assumed."
+
+        Only use cases that actually have a variant are candidates. A use case
+        the user tags garments with but never gave a differing verdict for has
+        no variant, so conditioning on it would return the unconditioned
+        profile under a misleading label. Ties break on the use case's name so
+        the choice is reproducible.
+        """
+        if not self.use_case_variants:
+            return None
+        counts: dict[str, int] = dict.fromkeys(self.use_case_variants, 0)
+        for reference in self.references:
+            for use_case in reference.use_cases:
+                if use_case in counts:
+                    counts[use_case] += 1
+        return min(counts, key=lambda name: (-counts[name], name))
+
+    def dimensions_for(self, use_case: str | None) -> Mapping[str, DimensionStat]:
+        """The dimension set to match against, given an intended use case.
+
+        Falls back to the unconditioned profile when the use case has no
+        variant — we have no use-case-specific evidence, and pretending
+        otherwise would attach a label to a profile that did not change.
+        """
+        if use_case is None:
+            return self.dimensions
+        return self.use_case_variants.get(use_case, self.dimensions)
+
     def to_response(self) -> FitProfileResponse:
         """Serialize to the ``GET /closet/fit-profile`` wire shape."""
         hint = (

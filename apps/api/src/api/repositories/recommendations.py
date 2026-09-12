@@ -19,6 +19,13 @@ from api.models import Recommendation
 from api.repositories.base import Repository
 
 
+class _Unset:
+    """Sentinel: distinguishes "not passed" from an explicit ``None``."""
+
+
+_UNSET = _Unset()
+
+
 def _narrative_payload(output: RecommendationOutput) -> dict[str, Any]:
     """The parts of PRD §5.4's reasoning that have no column of their own.
 
@@ -71,7 +78,7 @@ class RecommendationRepository(Repository[Recommendation, UUID]):
         brand_product_id: UUID,
         *,
         prompt_version: str = MANUAL_PROMPT_VERSION,
-        use_case_assumed: str | None = None,
+        use_case_assumed: str | None | _Unset = _UNSET,
     ) -> Recommendation:
         """Persist a ``domain.recommendation.Recommendation`` (TKT-P1-16).
 
@@ -81,11 +88,11 @@ class RecommendationRepository(Repository[Recommendation, UUID]):
         reworking the call site — and so the value is always something the
         caller chose, never something a default quietly invented.
 
-        ``use_case_assumed`` is a parameter for the same reason: PRD §6.4
-        wants the recommendation to record which use case it conditioned on,
-        but ``recommend`` does not yet select a ``use_case_variant`` from the
-        profile (that lands with the share-sheet flow). Passing ``None``
-        records "unconditioned", which is the truth today.
+        ``use_case_assumed`` defaults to whatever the engine actually
+        conditioned on (``output.use_case_assumed``), so PRD §6.4's "explicitly
+        notes which use case was assumed" cannot drift from what happened by a
+        caller forgetting to pass it. An explicit value still overrides, and an
+        explicit ``None`` still records "unconditioned".
 
         ``confidence`` converts through ``str`` so the ``NUMERIC(4, 3)``
         column stores the value the engine computed rather than the nearest
@@ -100,7 +107,11 @@ class RecommendationRepository(Repository[Recommendation, UUID]):
             reference_garment_ids=[
                 ref.garment_id for ref in output.reference_garments if ref.garment_id is not None
             ],
-            use_case_assumed=use_case_assumed,
+            use_case_assumed=(
+                output.use_case_assumed
+                if isinstance(use_case_assumed, _Unset)
+                else use_case_assumed
+            ),
             prompt_version=prompt_version,
         )
 
