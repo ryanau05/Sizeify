@@ -36,6 +36,9 @@ dev = [
 ]
 
 [tool.ruff]
+# NOTE: src/api/routes/ruff.toml extends this file and adds the route-layer
+# import boundary (TID251) for that directory only — see README.md. Ruff picks
+# the nearest config per file, so it applies without any extra CI wiring.
 line-length = 100
 target-version = "py312"
 src = ["src"]
@@ -61,6 +64,15 @@ mypy_path = "src"
 explicit_package_bases = true
 files = ["src/api"]
 
+[tool.coverage.run]
+# SQLAlchemy's asyncio layer bridges sync and async through greenlets, and
+# coverage's default tracer does not follow a greenlet switch — so lines after
+# an awaited DB call get reported as unexecuted even when they plainly ran.
+# Without this, coverage on repositories, services and routes is understated
+# (measured: 79% vs the true 97% on services/fit_profile.py), which matters
+# because tickets set numeric coverage bars.
+concurrency = ["greenlet", "thread"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
@@ -69,5 +81,5 @@ testpaths = ["tests"]
 # reliably honored in this venv; this makes `uv run pytest` deterministic.
 pythonpath = ["src"]
 markers = [
-    "slow: benchmark / wall-clock-sensitive tests. Skipped by default in CI's fast lane; run with `pytest -m slow` (or `-m 'not slow'` to exclude).",
+    "slow: benchmark / wall-clock-sensitive tests. CI runs these (the backend workflow calls bare `pytest`); exclude locally with `-m 'not slow'`.",
 ]

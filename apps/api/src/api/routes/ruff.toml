@@ -1,0 +1,44 @@
+# Route-layer import boundary — TKT-P1-20.
+#
+# Scoped config: ruff resolves the nearest config file per source file, so
+# these bans apply to `src/api/routes/**` and nowhere else. The repository
+# layer and `deps.py` legitimately hold sessions; handlers must not.
+#
+# The rule being enforced is CLAUDE.md's backend contract — "Database access
+# goes through the repository layer; no raw SQLAlchemy sessions in route
+# handlers" — plus the corollary `deps.py` documents: handlers depend on the
+# repository providers, never on `get_session` itself. It was previously only
+# checkable by hand (TKT-P1-03's acceptance was a `grep`); this makes it fail
+# at lint time, in CI and in the editor.
+#
+# Note for future route modules: importing a *type* for an annotation counts.
+# If a handler needs to demarcate a transaction, use
+# `api.repositories.base.transaction(repo.session)` — the repository exposes
+# its session deliberately, and that stays allowed.
+extend = "../../../pyproject.toml"
+
+[lint]
+extend-select = ["TID251"]
+
+[lint.flake8-tidy-imports.banned-api]
+"sqlalchemy.ext.asyncio.AsyncSession".msg = """\
+Route handlers must not touch a session directly (CLAUDE.md backend rules). \
+Depend on a repository from api.deps instead — it owns the session, which \
+keeps handlers testable and ownership scoping impossible to forget."""
+
+"sqlalchemy.ext.asyncio.async_sessionmaker".msg = """\
+Sessions are created by api.repositories.base and handed to handlers as \
+repositories. A route that builds its own sessionmaker escapes the \
+per-request transaction and the test harness's rollback."""
+
+"sqlalchemy.orm.Session".msg = """\
+The API is async end to end (CLAUDE.md: a single sync DB call on the \
+share-sheet path eats the §9.2 latency budget). Use a repository."""
+
+"api.deps.get_session".msg = """\
+Route handlers depend on the repository providers in api.deps, never on \
+get_session directly — see the module docstring there."""
+
+"api.deps._SessionDep".msg = """\
+Private to api.deps: it exists so the repository providers can be built. \
+Route handlers take a *RepositoryDep instead."""
