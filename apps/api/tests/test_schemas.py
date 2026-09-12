@@ -17,7 +17,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from api.schemas.auth import (
     LoginRequest,
@@ -45,7 +45,12 @@ from api.schemas.enums import (
     Verdict,
 )
 from api.schemas.fit_profile import DimensionPreference, FitProfileResponse
-from api.schemas.me import ExportResponse, RecommendationExport, UserExport
+from api.schemas.me import (
+    ExportResponse,
+    OwnedGarmentExport,
+    RecommendationExport,
+    UserExport,
+)
 
 
 def round_trip(instance: BaseModel) -> None:
@@ -107,8 +112,6 @@ def test_measurement_value_round_trip() -> None:
 
 def test_measurement_value_rejects_non_cm_unit() -> None:
     # Wire-contract invariant: stored measurements are cm-only (CLAUDE.md).
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         MeasurementValue(value=54.0, unit="in", source="manual_tape")  # type: ignore[arg-type]
 
@@ -116,8 +119,6 @@ def test_measurement_value_rejects_non_cm_unit() -> None:
 def test_measurement_value_rejects_unknown_source() -> None:
     # ``imported`` / ``cv_assisted`` reserved for forward-compat (PRD §A.9);
     # anything else is a typo.
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         MeasurementValue(value=54.0, unit="cm", source="ai_guessed")  # type: ignore[arg-type]
 
@@ -139,13 +140,40 @@ def test_owned_garment_create_round_trip() -> None:
 
 
 def test_owned_garment_update_round_trip_partial() -> None:
-    # PATCH semantics — only some fields populated.
-    round_trip(
-        OwnedGarmentUpdate(
-            overall_rating=OverallRating.LIKE,
-            size_label="L",
-        )
-    )
+    """PATCH semantics — only some fields populated.
+
+    Round-tripped with ``exclude_unset`` because that is the actual wire
+    format for a partial update. A full ``model_dump_json`` writes every
+    omitted field as an explicit ``null``, which is a different request:
+    ``{"brand": null}`` asks to clear a NOT NULL column and is now a 422.
+    """
+    partial = OwnedGarmentUpdate(overall_rating=OverallRating.LIKE, size_label="L")
+
+    rebuilt = OwnedGarmentUpdate.model_validate_json(partial.model_dump_json(exclude_unset=True))
+
+    assert rebuilt == partial
+    assert rebuilt.model_dump(exclude_unset=True) == {
+        "overall_rating": OverallRating.LIKE,
+        "size_label": "L",
+    }
+
+
+def test_owned_garment_update_rejects_clearing_a_not_null_column() -> None:
+    """``{"measurements": null}`` used to store ``'null'::jsonb`` — SQLAlchemy
+    maps Python ``None`` onto JSON null rather than SQL NULL, so the NOT NULL
+    constraint never fired and every subsequent read of that garment raised."""
+    for field in ("brand", "size_label", "measurements", "use_cases"):
+        with pytest.raises(ValidationError, match="cannot be cleared"):
+            OwnedGarmentUpdate(**{field: None})
+
+
+def test_owned_garment_update_still_allows_clearing_optional_fields() -> None:
+    cleared = OwnedGarmentUpdate(product_name=None, overall_rating=None)
+
+    assert cleared.model_dump(exclude_unset=True) == {
+        "product_name": None,
+        "overall_rating": None,
+    }
 
 
 def test_owned_garment_response_round_trip() -> None:
@@ -218,7 +246,7 @@ def test_signup_request_round_trip() -> None:
     round_trip(
         SignupRequest(
             email="alice@example.com",
-            password="correcthorsebatterystaple",
+            password="Correct-Horse-Battery-Staple",
             privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
             stated_fit_preference=StatedFitPreference.SLIM,
         )
@@ -227,14 +255,42 @@ def test_signup_request_round_trip() -> None:
 
 def test_signup_request_rejects_short_password() -> None:
     # PRD §11: passwords ≥ 10 characters. Schema-level enforcement.
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         SignupRequest(
             email="alice@example.com",
-            password="short",
+            password="Sh0rt!",
             privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
         )
+
+
+def test_signup_request_rejects_single_class_password() -> None:
+    # TKT-P1-07: long is not enough on its own; the password must mix
+    # character classes.
+    with pytest.raises(ValidationError):
+        SignupRequest(
+            email="alice@example.com",
+            password="correcthorsebatterystaple",
+            privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
+        )
+
+
+def test_signup_request_normalizes_naive_consent_timestamp_to_utc() -> None:
+    # The column is TIMESTAMPTZ; a client that omits the offset gets read
+    # as UTC rather than losing its consent record to a 422.
+    request = SignupRequest(
+        email="alice@example.com",
+        password="Correct-Horse-Battery-Staple",
+        privacy_consent_accepted_at=datetime(2026, 5, 26, 12, 0),  # noqa: DTZ001
+    )
+
+    assert request.privacy_consent_accepted_at == datetime(2026, 5, 26, 12, 0, tzinfo=UTC)
+
+
+def test_login_request_accepts_a_password_that_would_fail_signup_policy() -> None:
+    # Login must not enforce the new-password policy: a stale or simply
+    # wrong password belongs in a 401 from the credential check, not a 422
+    # from the schema (see api/schemas/auth.py).
+    assert LoginRequest(email="alice@example.com", password="x").password == "x"
 
 
 def test_login_request_round_trip() -> None:
@@ -311,6 +367,7 @@ def test_user_export_round_trip() -> None:
             id=uuid4(),
             email="alice@example.com",
             created_at=datetime(2026, 5, 26, tzinfo=UTC),
+            privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
             preferred_units=PreferredUnits.CM,
             stated_fit_preference=StatedFitPreference.REGULAR,
         )
@@ -340,10 +397,11 @@ def test_export_response_round_trip() -> None:
         id=uuid4(),
         email="alice@example.com",
         created_at=datetime(2026, 5, 26, tzinfo=UTC),
+        privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
         preferred_units=PreferredUnits.CM,
         stated_fit_preference=None,
     )
-    garment = OwnedGarmentResponse(
+    garment = OwnedGarmentExport(
         id=uuid4(),
         user_id=user.id,
         category_id="mens_button_down_shirt",
@@ -352,6 +410,7 @@ def test_export_response_round_trip() -> None:
         size_label="M",
         measurements=_measurements(),
         created_at=datetime(2026, 5, 26, tzinfo=UTC),
+        deleted_at=None,
     )
     signal = FitSignalResponse(
         id=uuid4(),

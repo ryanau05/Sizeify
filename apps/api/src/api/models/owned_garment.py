@@ -1,9 +1,21 @@
 """``owned_garment`` entity — PRD §8.
 
-``measurements`` is a JSONB blob keyed by dimension (chest_cm, body_length_cm,
-…). Shape is validated against ``garment_category.measurement_schema``, not
-the DB — categories own their schemas. Measurements are always stored in cm
-(CLAUDE.md domain conventions).
+``measurements`` is a JSONB blob keyed by canonical dimension name
+(``chest``, ``body_length``, …  — the same names used by
+``dimension_weights``, ``fit_signal.dimension``, and the size charts).
+Each value is a serialized ``schemas.closet.MeasurementValue``::
+
+    {"chest": {"value": 54.0, "unit": "cm", "source": "manual_tape"}}
+
+The stored object carries ``source`` because PRD §A.9 needs measurement
+provenance to survive a round trip — a CV-assisted measurement has
+different error bars than a tape one, and the matching engine's
+confidence calculation is expected to use that. Shape is validated
+against ``garment_category.measurement_schema`` (see
+``api.domain.measurements``), not by the DB — categories own their
+schemas. Measurements are always stored in cm (CLAUDE.md domain
+conventions), which is why ``unit`` is a ``Literal["cm"]`` rather than a
+real choice.
 """
 
 from datetime import datetime
@@ -23,6 +35,13 @@ class OwnedGarment(Base):
         # PRD §8.2: fit-profile construction reads one user's closet within a
         # category. Composite index covers the predicate exactly.
         sa.Index("ix_owned_garment_user_id_category_id", "user_id", "category_id"),
+        # TKT-P1-09: every closet read is "this user's *live* garments", so
+        # the index carries the predicate instead of indexing tombstones.
+        sa.Index(
+            "ix_owned_garment_user_id_active",
+            "user_id",
+            postgresql_where=sa.text("deleted_at IS NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid4)
@@ -54,3 +73,8 @@ class OwnedGarment(Base):
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
     )
+    # Soft delete (migration 0004). Historic recommendations cite closet rows
+    # by id (``recommendation.reference_garment_ids``), so a removed garment
+    # is tombstoned rather than dropped — otherwise past reasoning becomes
+    # unreconstructible. Every closet read filters ``deleted_at IS NULL``.
+    deleted_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)

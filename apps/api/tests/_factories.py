@@ -13,11 +13,13 @@ session from ``conftest.db_session`` — teardown rolls it back.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.auth import password as auth_password
 from api.models import (
     BrandProduct,
     FitSignal,
@@ -33,16 +35,30 @@ def _short_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
+# Credentials for fixture users. The hash is computed once at import
+# rather than pasted in as a literal: argon2 is deliberately ~75 ms so
+# per-call hashing would tax every test that touches a user, but a
+# literal would silently stop matching ``TEST_PASSWORD`` the moment
+# ``auth.password``'s parameters are recalibrated.
+TEST_PASSWORD = "TestPassw0rd!"
+TEST_PASSWORD_HASH = auth_password.hash(TEST_PASSWORD)
+
+
 async def make_user(
     session: AsyncSession,
     *,
     email: str | None = None,
     **overrides: Any,
 ) -> User:
-    user = User(
-        email=email or f"test-{_short_id()}@example.com",
-        **overrides,
-    )
+    fields: dict[str, Any] = {
+        "email": email or f"test-{_short_id()}@example.com",
+        "password_hash": TEST_PASSWORD_HASH,
+        # PRD §11 consent record. NOT NULL, so every fixture user needs
+        # one; the value only matters to tests that assert on it.
+        "privacy_consent_accepted_at": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+    fields.update(overrides)
+    user = User(**fields)
     session.add(user)
     await session.flush()
     return user
@@ -84,8 +100,13 @@ async def make_owned_garment(
         "category_id": category.id,
         "brand": "Test Brand",
         "size_label": "M",
-        # cm-only — see CLAUDE.md domain conventions.
-        "measurements": {"chest_cm": 54.0, "body_length_cm": 71.0},
+        # Keyed by canonical dimension name, values as stored by
+        # ``routes.closet`` — cm-only (CLAUDE.md domain conventions), with
+        # provenance kept for PRD §A.9.
+        "measurements": {
+            "chest": {"value": 54.0, "unit": "cm", "source": "manual_tape"},
+            "body_length": {"value": 71.0, "unit": "cm", "source": "manual_tape"},
+        },
     }
     fields.update(overrides)
     garment = OwnedGarment(**fields)

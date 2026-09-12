@@ -8,10 +8,10 @@ conversion happens at the UI boundary (CLAUDE.md).
 """
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from api.schemas.enums import (
     FitSignalSource,
@@ -34,7 +34,7 @@ class MeasurementValue(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    value: float = Field(gt=0)
+    value: float = Field(gt=0, allow_inf_nan=False)
     unit: Literal["cm"] = "cm"
     source: Literal["manual_tape", "cv_assisted", "imported"]
 
@@ -80,6 +80,11 @@ class OwnedGarmentCreate(_OwnedGarmentBase):
     category_id: str = Field(min_length=1, max_length=100)
 
 
+#: Fields whose columns are NOT NULL. Omitting them means "leave alone";
+#: sending them as ``null`` is a client error, not a clear-the-field request.
+_NOT_NULLABLE_ON_UPDATE = ("brand", "size_label", "measurements", "use_cases")
+
+
 class OwnedGarmentUpdate(BaseModel):
     """``PATCH /closet/garments/{id}`` body (TKT-P1-09).
 
@@ -87,9 +92,40 @@ class OwnedGarmentUpdate(BaseModel):
     intentionally omitted — re-categorizing an existing garment would
     invalidate its fit signals (different dimension set), so the client
     must delete-and-recreate instead.
+
+    "Optional" here means *omittable*, not *nullable*. Four of these back
+    NOT NULL columns and are rejected when sent explicitly as ``null``;
+    only ``product_name``, ``fabric_composition``, ``stretch_level`` and
+    ``overall_rating`` can actually be cleared.
+
+    That distinction is load-bearing rather than pedantic. SQLAlchemy's
+    JSON type maps Python ``None`` onto JSON ``null`` instead of SQL NULL,
+    so ``{"measurements": null}`` used to slip past the NOT NULL constraint
+    and store ``'null'::jsonb`` — after which every read of that garment
+    (the closet list, the fit profile, and the GDPR export) raised, for
+    good. One ordinary PATCH could permanently brick an account.
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: Any) -> Any:
+        """422 on a present-but-null key backing a NOT NULL column.
+
+        Runs in ``before`` mode because the distinction being enforced is
+        "was the key present at all", which is gone by the time the fields
+        are parsed — an omitted field and an explicit ``null`` both arrive
+        as ``None`` afterwards.
+        """
+        if not isinstance(data, dict):
+            return data
+        nulled = [f for f in _NOT_NULLABLE_ON_UPDATE if f in data and data[f] is None]
+        if nulled:
+            raise ValueError(
+                "cannot be cleared; omit the field to leave it unchanged: " + ", ".join(nulled)
+            )
+        return data
 
     brand: _BrandField | None = None
     product_name: _ProductNameField | None = None
@@ -138,7 +174,12 @@ class FitSignalCreate(BaseModel):
 
     dimension: str = Field(min_length=1, max_length=100)
     verdict: Verdict
-    magnitude_cm: float | None = Field(default=None, ge=0)
+    # Bounded to the NUMERIC(6, 2) column it lands in. Unbounded, an ordinary
+    # request body (magnitude_cm: 100000.0, or a JSON `Infinity` literal, which
+    # stdlib json accepts) reached Postgres and came back as an unhandled
+    # NumericValueOutOfRangeError — a 500 where the contract says 422. The
+    # ceiling is deliberately far past any real garment: no sleeve is 1 m off.
+    magnitude_cm: float | None = Field(default=None, ge=0, le=100.0, allow_inf_nan=False)
     use_case: _UseCaseField | None = None
     raw_feedback_text: str | None = Field(default=None, max_length=2000)
 

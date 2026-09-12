@@ -55,12 +55,24 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
 async def transaction(session: AsyncSession) -> AsyncIterator[AsyncSession]:
     """Run a unit of work inside a DB transaction.
 
-    Commits on clean exit; rolls back if the block raises. Repositories that
+    Commits on clean exit; rolls back if the block raises. Callers that
     mutate state are expected to wrap their work in this helper instead of
     calling ``session.commit()`` directly so the rollback path stays uniform.
+
+    Deliberately does **not** call ``session.begin()``. SQLAlchemy autobegins
+    a transaction on the session's first statement, so an explicit ``begin()``
+    raises "a transaction is already begun" whenever the caller read something
+    before deciding to write — which is every read-then-write handler
+    (``POST /auth/login`` loads the user, verifies the password, then issues
+    tokens). Relying on autobegin makes the helper composable with that
+    ordering while keeping the commit/rollback contract identical.
     """
-    async with session.begin():
+    try:
         yield session
+    except Exception:
+        await session.rollback()
+        raise
+    await session.commit()
 
 
 class Repository[EntityT: Base, IdT]:

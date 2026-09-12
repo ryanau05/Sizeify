@@ -19,7 +19,10 @@ async def test_create_and_get(db_session: AsyncSession) -> None:
     category = await make_garment_category(db_session)
     repo = OwnedGarmentRepository(db_session)
 
-    measurements = {"chest_cm": 54.0, "body_length_cm": 71.0}
+    measurements = {
+        "chest": {"value": 54.0, "unit": "cm", "source": "manual_tape"},
+        "body_length": {"value": 71.0, "unit": "cm", "source": "manual_tape"},
+    }
     garment = await repo.create(
         user_id=user.id,
         category_id=category.id,
