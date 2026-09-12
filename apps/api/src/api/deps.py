@@ -20,6 +20,7 @@ The ``*Dep`` ``Annotated`` aliases are the canonical call-site form::
         ...
 """
 
+import logging
 from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
@@ -39,6 +40,8 @@ from api.repositories import (
     UserRepository,
 )
 from api.repositories.base import get_sessionmaker
+
+logger = logging.getLogger(__name__)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -242,6 +245,11 @@ async def get_current_user(
         # Signed token, but the account is gone (TKT-P1-18's DELETE /me, or
         # a token minted under a since-restored database). Indistinguishable
         # from a bad signature on purpose — see the note above.
+        #
+        # Worth logging even so: a correctly-signed token for a user that does
+        # not exist means either a normal post-erasure request or a signing key
+        # that outlived its database, and those need telling apart.
+        logger.warning("auth.token.unknown_subject", extra={"user_id": str(claims.user_id)})
         raise _invalid_token()
 
     return user

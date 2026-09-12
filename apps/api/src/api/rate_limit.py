@@ -49,12 +49,16 @@ No lock is needed, and adding one would only serialize the loop.
 
 from __future__ import annotations
 
+import ipaddress
+import logging
 import math
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+logger = logging.getLogger(__name__)
 
 # Default budget for ``/auth/*``, overridable via ``Settings``. 10 requests
 # of burst, refilling at 10/minute: enough for a user fumbling their
@@ -163,10 +167,12 @@ class RateLimitMiddleware:
         limiter: TokenBucketLimiter,
         path_prefix: str = "/auth/",
         known_paths: Iterable[str] = (),
+        trusted_proxies: Sequence[str] = (),
     ) -> None:
         self.app = app
         self._limiter = limiter
         self._path_prefix = path_prefix
+        self._trusted_proxies = _parse_networks(trusted_proxies)
         # Bucket keys are per-endpoint, and this is the set of endpoints that
         # actually exist. Anything else collapses to one shared key.
         self._known_paths = frozenset(known_paths)
@@ -200,19 +206,38 @@ class RateLimitMiddleware:
         endpoints) while keeping the per-endpoint separation that stops an
         exhausted login bucket from also blocking refresh.
 
-        ``scope["client"]`` is the peer address. ``X-Forwarded-For`` is
-        deliberately ignored: honoring it without a trusted-proxy
-        allowlist makes the limiter opt-out via one spoofed header. Note
-        the flip side, which is a deployment gate rather than a Phase 8
-        nicety: behind a load balancer every request shares the proxy's
-        address, so the per-IP budget becomes a global one and a single
-        attacker can 429 every user. Add the trusted-proxy allowlist
-        before the API goes behind an ingress.
+        The client address comes from ``_client_ip``, which honours
+        ``X-Forwarded-For`` only when the peer is itself a configured trusted
+        proxy. Trusting the header unconditionally would make the limiter
+        opt-out via one spoofed line; ignoring it unconditionally collapses
+        every request behind a load balancer into a single bucket, which is
+        worse than no limiter at all.
+        """
+        path = scope["path"] if scope["path"] in self._known_paths else "<unrouted>"
+        return f"{self._client_ip(scope)}:{path}"
+
+    def _client_ip(self, scope: Scope) -> str:
+        """The address to bill this request to.
+
+        Walks ``X-Forwarded-For`` from the right, skipping hops that are
+        themselves trusted proxies, and returns the first address that is
+        not. Right-to-left matters: the header is append-only, so anything a
+        client sends arrives on the *left* and is attacker-controlled. Only
+        the entries our own infrastructure appended can be believed, and only
+        while every hop between us and them is trusted.
         """
         client = scope.get("client")
-        host = client[0] if client else "unknown"
-        path = scope["path"] if scope["path"] in self._known_paths else "<unrouted>"
-        return f"{host}:{path}"
+        peer = client[0] if client else "unknown"
+        if not self._trusted_proxies or not _in_networks(peer, self._trusted_proxies):
+            return peer
+
+        forwarded = _forwarded_for(scope)
+        for candidate in reversed(forwarded):
+            if not _in_networks(candidate, self._trusted_proxies):
+                return candidate
+        # Every hop claimed to be a proxy. Fall back to the peer rather than
+        # believing the leftmost (fully client-controlled) entry.
+        return peer
 
 
 async def _send_429(send: Send, retry_after: float) -> None:
@@ -228,3 +253,38 @@ async def _send_429(send: Send, retry_after: float) -> None:
     start: Message = {"type": "http.response.start", "status": 429, "headers": headers}
     await send(start)
     await send({"type": "http.response.body", "body": body})
+
+
+_Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def _parse_networks(cidrs: Sequence[str]) -> tuple[_Network, ...]:
+    """Parse configured CIDRs, dropping (and reporting) unparseable ones.
+
+    A typo in deployment config must not take the API down, but it must not
+    silently widen or narrow who is trusted either — hence the log line.
+    """
+    networks: list[_Network] = []
+    for cidr in cidrs:
+        try:
+            networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            logger.error("rate_limit.trusted_proxy.invalid", extra={"cidr": cidr})
+    return tuple(networks)
+
+
+def _in_networks(address: str, networks: Sequence[_Network]) -> bool:
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(parsed in network for network in networks)
+
+
+def _forwarded_for(scope: Scope) -> list[str]:
+    """``X-Forwarded-For`` entries, left to right, as sent."""
+    for raw_name, raw_value in scope.get("headers", ()):
+        if raw_name == b"x-forwarded-for":
+            decoded = raw_value.decode("latin-1")
+            return [part.strip() for part in decoded.split(",") if part.strip()]
+    return []

@@ -1,6 +1,15 @@
+from functools import lru_cache
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from api import rate_limit
+
+#: ``apps/api/.env``, resolved from this file rather than the process CWD.
+#: A relative ``env_file`` made the loaded values depend on where the
+#: interpreter was started: ``uv run pytest`` from the repo root and from
+#: ``apps/api`` resolved different files.
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
@@ -17,7 +26,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -43,6 +52,32 @@ class Settings(BaseSettings):
     auth_rate_limit_capacity: int = rate_limit.DEFAULT_CAPACITY
     auth_rate_limit_window_seconds: int = rate_limit.DEFAULT_WINDOW_SECONDS
 
+    # Comma-separated CIDRs of load balancers / ingress allowed to set
+    # ``X-Forwarded-For``. Empty by default, which means the rate limiter
+    # trusts nothing and keys on the TCP peer.
+    #
+    # This has to be set before the API goes behind a proxy. Unset, every
+    # request arrives with the proxy's address, the whole deployment shares
+    # one bucket, and a single attacker 429s every user — protection inverts
+    # into a denial of service rather than merely degrading.
+    trusted_proxy_cidrs: str = ""
 
+    def trusted_proxies(self) -> tuple[str, ...]:
+        """``trusted_proxy_cidrs`` split into individual networks."""
+        return tuple(part.strip() for part in self.trusted_proxy_cidrs.split(",") if part.strip())
+
+
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """Process-wide settings, read once.
+
+    Cached to match ``repositories.base.get_engine``. Uncached, every call
+    re-read and re-parsed the dotenv file from disk — and ``auth.jwt._secret``
+    calls it on every token encode *and* decode, so an authenticated request
+    paid blocking file I/O on the event loop just to look up the signing key
+    (measured 0.548 ms/call).
+
+    Tests that vary the environment call ``get_settings.cache_clear()``; the
+    autouse fixture in ``tests/conftest.py`` does it around every test.
+    """
     return Settings()

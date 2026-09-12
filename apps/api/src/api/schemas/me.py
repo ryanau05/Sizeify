@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from api.schemas.closet import FitSignalResponse, OwnedGarmentResponse
 from api.schemas.enums import (
@@ -27,6 +27,26 @@ from api.schemas.enums import (
     PreferredUnits,
     StatedFitPreference,
 )
+
+
+class AccountDeleteRequest(BaseModel):
+    """``DELETE /me`` body (PRD §11).
+
+    Erasure is the one irreversible operation in the API, so it is gated on
+    something the caller knows rather than only on something they hold. A
+    15-minute access token that leaked, or a handset left unlocked, is enough
+    to reach every other endpoint; it should not be enough to destroy the
+    account.
+
+    Password rather than a re-issued token because the point is to prove the
+    *person* is present, not that the session is fresh.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # No complexity rules here, the same as login: this is a credential check
+    # whose only correct failure is 401. See ``schemas.auth``.
+    password: str = Field(min_length=1, max_length=256)
 
 
 class UserExport(BaseModel):

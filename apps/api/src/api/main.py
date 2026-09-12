@@ -10,11 +10,13 @@ means one test's exhausted bucket cannot leak into the next.
 from fastapi import FastAPI
 
 from api.config import get_settings
+from api.logging import configure_logging
 from api.rate_limit import RateLimitMiddleware, TokenBucketLimiter
 from api.routes import auth, closet, health, me
 
 
 def create_app() -> FastAPI:
+    configure_logging()
     settings = get_settings()
     app = FastAPI(title="Sizeify API")
 
@@ -32,6 +34,7 @@ def create_app() -> FastAPI:
         # The real endpoint list, so an unrouted /auth/* path cannot mint a
         # bucket of its own (see ``RateLimitMiddleware._key``).
         known_paths=[route.path for route in auth.router.routes if hasattr(route, "path")],
+        trusted_proxies=settings.trusted_proxies(),
     )
 
     app.include_router(health.router)

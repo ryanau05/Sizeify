@@ -34,10 +34,13 @@ compliance failure that looks exactly like a working endpoint, which is
 the worst way for this to break.
 """
 
+import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, status
+import anyio.to_thread
+from fastapi import APIRouter, HTTPException, status
 
+from api.auth import password as auth_password
 from api.deps import (
     UNAUTHORIZED_RESPONSE,
     CurrentUser,
@@ -49,11 +52,14 @@ from api.deps import (
 from api.repositories.base import transaction
 from api.schemas.closet import FitSignalResponse
 from api.schemas.me import (
+    AccountDeleteRequest,
     ExportResponse,
     OwnedGarmentExport,
     RecommendationExport,
     UserExport,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -92,6 +98,7 @@ async def export(
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT, responses={**UNAUTHORIZED_RESPONSE})
 async def delete_me(
+    body: AccountDeleteRequest,
     user: CurrentUser,
     users: UserRepositoryDep,
 ) -> None:
@@ -103,6 +110,10 @@ async def delete_me(
     shirt keeps past recommendations readable — there is nothing left to
     keep readable once the account itself is gone.
 
+    Requires the account's current password in the body (PRD §11). Erasure
+    is irreversible and cascades to every table the user owns, so a leaked or
+    borrowed access token must not be sufficient on its own.
+
     Idempotent in the way that matters: the user row backs every
     ``CurrentUser`` resolution, so once it is gone the caller's access
     token stops authenticating and a repeat call answers 401 rather than
@@ -112,5 +123,21 @@ async def delete_me(
     the same non-disclosure rule TKT-P1-08 applies to every unknown
     subject.
     """
+    # Re-authenticate. The bearer token got the caller this far; proving they
+    # know the password is what distinguishes the account's owner from anyone
+    # holding a token that leaked. Verified off the event loop for the same
+    # reason login is (argon2 is ~75-250 ms of CPU).
+    if not await anyio.to_thread.run_sync(auth_password.verify, body.password, user.password_hash):
+        logger.warning("me.account.erase_denied", extra={"user_id": str(user.id)})
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Password does not match; account not deleted.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     async with transaction(users.session):
         await users.delete_account(user.id)
+
+    # The one action in the API with no undo. Logged after the commit so the
+    # record means "this happened", not "this was attempted".
+    logger.warning("me.account.erased", extra={"user_id": str(user.id)})

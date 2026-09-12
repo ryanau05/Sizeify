@@ -33,6 +33,7 @@ from api.auth.jwt import (
     issue_pair,
     rotate,
 )
+from api.config import get_settings
 from api.repositories.refresh_tokens import RefreshTokenRepository
 
 
@@ -42,6 +43,7 @@ def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # that. Set via env var so the same ``Settings`` resolution path the
     # app uses in production exercises here too.
     monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    get_settings.cache_clear()
     yield
 
 
@@ -138,6 +140,7 @@ def test_decode_raises_on_wrong_secret(
     # otherwise, which would clutter the test output without flagging a
     # real bug.
     monkeypatch.setenv("JWT_SECRET", "a-completely-different-32+-byte-secret")
+    get_settings.cache_clear()
     with pytest.raises(InvalidTokenError):
         decode(tok)
 
@@ -146,6 +149,7 @@ def test_decode_raises_when_jwt_secret_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JWT_SECRET", "")
+    get_settings.cache_clear()
     # Refuse to operate without a key — defense against a misconfigured
     # production deploy.
     with pytest.raises(RuntimeError, match="JWT_SECRET is empty"):

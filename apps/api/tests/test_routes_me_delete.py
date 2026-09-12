@@ -20,6 +20,7 @@ import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 from _factories import (
+    TEST_PASSWORD,
     make_brand_product,
     make_fit_signal,
     make_owned_garment,
@@ -30,6 +31,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import jwt as auth_jwt
+from api.config import get_settings
 from api.models import (
     BrandProduct,
     FitSignal,
@@ -46,6 +48,27 @@ from api.seeds.garment_categories import (
 )
 
 ME = "/me"
+#: DELETE /me now re-authenticates (PRD §11), so every call carries the password.
+CONFIRM = {"password": TEST_PASSWORD}
+SIGNUP_CONFIRM = {"password": "Str0ng-Passphrase"}
+
+
+async def erase(client: AsyncClient, access: str, body: dict[str, str] | None = None) -> Any:
+    """``DELETE /me`` with its confirmation body.
+
+    httpx's convenience ``client.delete()`` takes no body, so this goes
+    through ``client.request``. Worth knowing when writing the mobile
+    clients: DELETE-with-a-body is legal and FastAPI serves it, but not
+    every HTTP library exposes it on the convenience method.
+    """
+    return await client.request(
+        "DELETE",
+        ME,
+        headers={"Authorization": f"Bearer {access}"},
+        json=CONFIRM if body is None else body,
+    )
+
+
 EXPORT = "/me/export"
 GARMENTS = "/closet/garments"
 
@@ -53,6 +76,7 @@ GARMENTS = "/closet/garments"
 @pytest.fixture(autouse=True)
 def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    get_settings.cache_clear()
     yield
 
 
@@ -135,7 +159,7 @@ async def test_delete_removes_every_row_for_that_user(
     before = await count_for_user(db_session, user.id)
     assert all(count == 1 for count in before.values()), before
 
-    response = await client.delete(ME, headers={"Authorization": f"Bearer {access}"})
+    response = await erase(client, access)
 
     assert response.status_code == 204
     assert await count_for_user(db_session, user.id) == dict.fromkeys(before, 0)
@@ -148,13 +172,13 @@ async def test_old_access_token_stops_working(
     access, _ = await token_pair(db_session, user)
     headers = {"Authorization": f"Bearer {access}"}
 
-    assert (await client.delete(ME, headers=headers)).status_code == 204
+    assert (await client.request("DELETE", ME, headers=headers, json=CONFIRM)).status_code == 204
 
     # The token is still unexpired and correctly signed — it fails because
     # the subject it names no longer exists.
     assert (await client.get(EXPORT, headers=headers)).status_code == 401
     assert (await client.get(GARMENTS, headers=headers)).status_code == 401
-    assert (await client.delete(ME, headers=headers)).status_code == 401
+    assert (await client.request("DELETE", ME, headers=headers, json=CONFIRM)).status_code == 401
 
 
 async def test_old_refresh_token_cannot_be_rotated_back_into_access(
@@ -165,9 +189,7 @@ async def test_old_refresh_token_cannot_be_rotated_back_into_access(
     user, _ = await populated_user(db_session)
     access, refresh = await token_pair(db_session, user)
 
-    assert (
-        await client.delete(ME, headers={"Authorization": f"Bearer {access}"})
-    ).status_code == 204
+    assert (await erase(client, access)).status_code == 204
 
     response = await client.post("/auth/refresh", json={"refresh_token": refresh})
 
@@ -187,9 +209,7 @@ async def test_deleted_account_cannot_log_back_in(
     )
     access = signup.json()["access_token"]
 
-    assert (
-        await client.delete(ME, headers={"Authorization": f"Bearer {access}"})
-    ).status_code == 204
+    assert (await erase(client, access, SIGNUP_CONFIRM)).status_code == 204
 
     login = await client.post(
         "/auth/login", json={"email": "alice@example.com", "password": "Str0ng-Passphrase"}
@@ -208,7 +228,7 @@ async def test_the_email_becomes_reusable(client: AsyncClient, db_session: Async
     }
     first = await client.post("/auth/signup", json=body)
     assert first.status_code == 201
-    await client.delete(ME, headers={"Authorization": f"Bearer {first.json()['access_token']}"})
+    await erase(client, first.json()["access_token"], SIGNUP_CONFIRM)
 
     second = await client.post("/auth/signup", json=body)
 
@@ -232,9 +252,7 @@ async def test_another_users_data_is_untouched(
     # Bob gets a token chain too, so every counted table holds a row of his.
     await token_pair(db_session, bob)
 
-    assert (
-        await client.delete(ME, headers={"Authorization": f"Bearer {access}"})
-    ).status_code == 204
+    assert (await erase(client, access)).status_code == 204
 
     alice_counts = await count_for_user(db_session, alice.id)
     bob_counts = await count_for_user(db_session, bob.id)
@@ -250,9 +268,7 @@ async def test_shared_catalog_survives(client: AsyncClient, db_session: AsyncSes
     user, ids = await populated_user(db_session)
     access, _ = await token_pair(db_session, user)
 
-    assert (
-        await client.delete(ME, headers={"Authorization": f"Bearer {access}"})
-    ).status_code == 204
+    assert (await erase(client, access)).status_code == 204
 
     assert await db_session.get(BrandProduct, ids["brand_product"]) is not None
     assert await db_session.get(GarmentCategory, MENS_BUTTON_DOWN_SHIRT_ID) is not None
@@ -264,7 +280,7 @@ async def test_shared_catalog_survives(client: AsyncClient, db_session: AsyncSes
 
 
 async def test_delete_requires_authentication(client: AsyncClient) -> None:
-    assert (await client.delete(ME)).status_code == 401
+    assert (await client.request("DELETE", ME, json=CONFIRM)).status_code == 401
 
 
 async def test_deleting_with_a_refresh_token_is_401(
@@ -275,7 +291,7 @@ async def test_deleting_with_a_refresh_token_is_401(
     user, _ = await populated_user(db_session)
     _, refresh = await token_pair(db_session, user)
 
-    response = await client.delete(ME, headers={"Authorization": f"Bearer {refresh}"})
+    response = await erase(client, refresh)
 
     assert response.status_code == 401
     assert (await count_for_user(db_session, user.id))["user"] == 1
@@ -330,3 +346,44 @@ async def test_fit_signal_cascades_from_its_garment(db_session: AsyncSession) ->
     ).all()
 
     assert [(row.child_table, row.confdeltype) for row in rows] == [("fit_signal", b"c")]
+
+
+async def test_erasure_requires_the_current_password(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """PRD §11. A leaked or borrowed access token reaches every other
+    endpoint; it must not be enough on its own to destroy the account."""
+    user, _ = await populated_user(db_session)
+    access, _ = await token_pair(db_session, user)
+
+    wrong = await erase(client, access, {"password": "not-the-password"})
+
+    assert wrong.status_code == 401
+    # Nothing was touched.
+    assert (await count_for_user(db_session, user.id))["user"] == 1
+    # And the right password still works.
+    assert (await erase(client, access)).status_code == 204
+
+
+async def test_erasure_body_is_required(client: AsyncClient, db_session: AsyncSession) -> None:
+    user, _ = await populated_user(db_session)
+    access, _ = await token_pair(db_session, user)
+
+    response = await client.request(
+        "DELETE", ME, headers={"Authorization": f"Bearer {access}"}, json={}
+    )
+
+    assert response.status_code == 422
+    assert (await count_for_user(db_session, user.id))["user"] == 1
+
+
+async def test_erasure_still_needs_a_valid_token(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The password is an additional factor, not a replacement for the token."""
+    user, _ = await populated_user(db_session)
+
+    response = await client.request("DELETE", ME, json=CONFIRM)
+
+    assert response.status_code == 401
+    assert (await count_for_user(db_session, user.id))["user"] == 1

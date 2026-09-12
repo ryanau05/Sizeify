@@ -28,6 +28,7 @@ back with the failed request. ``refresh`` below catches the error inside
 the transaction for exactly that reason.
 """
 
+import logging
 from typing import Annotated
 
 import anyio.to_thread
@@ -41,6 +42,8 @@ from api.deps import RefreshTokenRepositoryDep, UserRepositoryDep
 from api.models import User
 from api.repositories.base import transaction
 from api.schemas.auth import LoginRequest, RefreshRequest, SignupRequest, TokenPair
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -111,6 +114,17 @@ async def _verify_credentials(user: User | None, submitted_password: str) -> Use
         auth_password.verify, submitted_password, candidate_hash
     )
     if user is None or not matched:
+        # No email in the payload: a failed-login log that records the address
+        # tried is a credential-stuffing target list sitting in the log store
+        # (PRD §11 data minimization). ``known_account`` is enough to tell a
+        # spray against random addresses from a targeted attempt on a real one.
+        logger.warning(
+            "auth.login.failed",
+            extra={
+                "known_account": user is not None,
+                "user_id": str(user.id) if user is not None else None,
+            },
+        )
         raise _invalid_credentials()
     return user
 
@@ -186,13 +200,17 @@ async def refresh(
         async with transaction(refresh_tokens.session):
             try:
                 access, new_refresh = await auth_jwt.rotate(body.refresh_token, refresh_tokens)
-            except auth_jwt.ReusedRefreshTokenError:
+            except auth_jwt.ReusedRefreshTokenError as exc:
                 # Caught *inside* the transaction on purpose. ``rotate``
                 # has already revoked the user's whole chain in this
                 # session; that revocation is the security response to a
                 # probable token theft and must commit. Letting the error
                 # escape the block would roll it back along with the
                 # failed request and defeat the mechanism entirely.
+                # Probable token theft. This is the event worth paging on:
+                # the user's entire chain has just been revoked and they are
+                # about to be logged out of every device.
+                logger.warning("auth.refresh.replayed", extra={"user_id": str(exc.user_id)})
                 replayed = True
     except (auth_jwt.ExpiredTokenError, auth_jwt.InvalidTokenError):
         # These are raised before ``rotate`` writes anything, so the

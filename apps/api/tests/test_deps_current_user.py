@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import jwt as auth_jwt
+from api.config import get_settings
 from api.deps import CurrentUser
 from api.repositories.refresh_tokens import RefreshTokenRepository
 
@@ -32,6 +33,7 @@ PROTECTED = "/_test/protected"
 @pytest.fixture(autouse=True)
 def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    get_settings.cache_clear()
     yield
 
 
@@ -212,8 +214,10 @@ async def test_token_signed_with_another_secret_is_401(
 ) -> None:
     user = await make_user(db_session)
     monkeypatch.setenv("JWT_SECRET", "a-different-secret-of-a-respectable-length")
+    get_settings.cache_clear()
     foreign = await issue_access_token(db_session, user.id)
     monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    get_settings.cache_clear()
 
     response = await client.get(PROTECTED, headers=bearer(foreign))
 

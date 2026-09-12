@@ -8,6 +8,9 @@ tested against arithmetic rather than against ``time.monotonic`` and a
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any
+
 import pytest
 
 from api import rate_limit
@@ -173,3 +176,80 @@ def test_known_endpoints_keep_separate_buckets() -> None:
     assert limiter.acquire(middleware._key({**scope, "path": "/auth/login"})) is None
     assert limiter.acquire(middleware._key({**scope, "path": "/auth/login"})) is not None
     assert limiter.acquire(middleware._key({**scope, "path": "/auth/refresh"})) is None
+
+
+# ---------------------------------------------------------------------------
+# Trusted-proxy resolution.
+# ---------------------------------------------------------------------------
+
+
+def _scope(peer: str, forwarded: str | None = None) -> dict[str, Any]:
+    scope: dict[str, Any] = {
+        "type": "http",
+        "path": "/auth/login",
+        "client": (peer, 1),
+        "headers": [],
+    }
+    if forwarded is not None:
+        scope["headers"] = [(b"x-forwarded-for", forwarded.encode())]
+    return scope
+
+
+def _middleware(trusted: Sequence[str] = ()) -> Any:
+    from api.rate_limit import RateLimitMiddleware
+
+    return RateLimitMiddleware(
+        app=None,  # type: ignore[arg-type]
+        limiter=TokenBucketLimiter(capacity=10, window_seconds=60),
+        known_paths=["/auth/login"],
+        trusted_proxies=trusted,
+    )
+
+
+def test_forwarded_header_is_ignored_without_a_trusted_proxy() -> None:
+    """The default. Honouring X-Forwarded-For unconditionally makes the
+    limiter opt-out via one spoofed line."""
+    assert _middleware()._client_ip(_scope("10.0.0.5", "1.2.3.4")) == "10.0.0.5"
+
+
+def test_real_client_is_billed_behind_a_trusted_proxy() -> None:
+    """Without this the whole deployment shares one bucket and a single
+    attacker 429s every user — protection inverted, not degraded."""
+    assert (
+        _middleware(["10.0.0.0/8"])._client_ip(_scope("10.0.0.5", "203.0.113.9")) == "203.0.113.9"
+    )
+
+
+def test_client_forged_hops_are_not_believed() -> None:
+    """X-Forwarded-For is append-only, so anything the client sent arrives on
+    the left. Only entries our own infrastructure appended can be trusted."""
+    middleware = _middleware(["10.0.0.0/8"])
+
+    assert middleware._client_ip(_scope("10.0.0.5", "1.1.1.1, 203.0.113.9")) == "203.0.113.9"
+
+
+def test_chained_trusted_hops_are_skipped() -> None:
+    middleware = _middleware(["10.0.0.0/8"])
+
+    assert middleware._client_ip(_scope("10.0.0.5", "203.0.113.9, 10.0.0.7")) == "203.0.113.9"
+
+
+def test_untrusted_peer_keeps_its_own_address() -> None:
+    middleware = _middleware(["10.0.0.0/8"])
+
+    assert middleware._client_ip(_scope("198.51.100.2", "203.0.113.9")) == "198.51.100.2"
+
+
+def test_all_hops_trusted_falls_back_to_the_peer() -> None:
+    """Rather than believing the leftmost, fully client-controlled entry."""
+    middleware = _middleware(["10.0.0.0/8"])
+
+    assert middleware._client_ip(_scope("10.0.0.5", "10.0.0.7, 10.0.0.8")) == "10.0.0.5"
+
+
+def test_unparseable_trusted_cidr_does_not_widen_trust() -> None:
+    """A typo in deployment config must not take the API down, and must not
+    silently trust everything either."""
+    middleware = _middleware(["not-a-cidr"])
+
+    assert middleware._client_ip(_scope("10.0.0.5", "1.2.3.4")) == "10.0.0.5"

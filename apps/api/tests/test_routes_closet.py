@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import jwt as auth_jwt
+from api.config import get_settings
 from api.models import GarmentCategory, OwnedGarment
 from api.repositories.refresh_tokens import RefreshTokenRepository
 from api.seeds.garment_categories import (
@@ -43,6 +44,7 @@ GARMENTS = "/closet/garments"
 @pytest.fixture(autouse=True)
 def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    get_settings.cache_clear()
     yield
 
 

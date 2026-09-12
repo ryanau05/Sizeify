@@ -34,6 +34,7 @@ import sqlalchemy as sa
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.config import get_settings
 from api.domain.matching import BrandProduct as MatchingProduct
 from api.domain.matching import match
 from api.domain.recommendation import recommend
@@ -202,6 +203,7 @@ FIXTURE_PRODUCT = MatchingProduct(
 @pytest.fixture(autouse=True)
 def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    get_settings.cache_clear()
     yield
 
 

@@ -5,56 +5,6 @@ fixed in that pass; these are the ones that were found, verified, and
 deliberately left. Each was reproduced against the running app or the dev
 database, so none of them are speculative.
 
-## Backend — must close before the API takes real traffic
-
-### Cache `get_settings()`
-
-**What:** Add `@lru_cache(maxsize=1)` to `api.config.get_settings`, resolve `env_file` to an absolute path, and switch the tests that rely on re-reading to `get_settings.cache_clear()`.
-
-**Why:** It is uncached today, so `pydantic-settings` re-reads and re-parses `.env` from disk on every call. `auth.jwt._secret()` calls it on every token encode and every decode, which puts blocking synchronous file I/O on the event loop for every authenticated request. Measured: 0.548 ms/call.
-
-**Context:** `repositories.base.get_engine` and `get_sessionmaker` are already `@lru_cache`d, so the DB URL freezes at first call while the JWT secret and TTLs can shift mid-process. The blocker is that `tests/test_routes_auth.py` and `test_auth_jwt.py` monkeypatch `JWT_SECRET` and depend on the re-read; they need a `cache_clear()` fixture first. Also validate at `create_app()` that `jwt_secret` is non-empty outside dev, rather than discovering it as a RuntimeError → 500 on the first login.
-
-**Effort:** S
-**Priority:** P0
-**Depends on:** None
-
-### Trusted-proxy handling in the rate limiter
-
-**What:** Add a `trusted_proxy_cidrs` setting (empty by default) and parse the rightmost untrusted `X-Forwarded-For` hop when the peer is inside it.
-
-**Why:** The limiter keys on the TCP peer address. Behind any load balancer or ingress that is the proxy, so the whole deployment shares one bucket and a single attacker spends the entire `/auth/login` budget, 429-ing every real user. The failure mode is inverted, not degraded: protection becomes a denial of service.
-
-**Context:** `rate_limit.py::_key` ignores `X-Forwarded-For` deliberately and correctly, since honouring it without an allowlist makes the limiter opt-out via one spoofed header. The module docstring defers the allowlist to Phase 8 alongside the Redis backend. That is the wrong gate: this must land before the API first sits behind a proxy, whenever that happens. `scope["client"]` can also be `None` on some ASGI servers, collapsing everyone into the literal key `"unknown"`.
-
-**Effort:** M
-**Priority:** P0
-**Depends on:** None
-
-### Structured logging
-
-**What:** Add `logging.getLogger(__name__)` and a structured handler wired in `create_app`, starting with the refresh-replay branch and repeated 401s.
-
-**Why:** There is no logging anywhere in `src/api`. A refresh-token replay revokes a user's entire chain and nothing is ever emitted, so no operator can learn that a token was probably stolen. Failed logins and 401s are equally silent.
-
-**Context:** The code already anticipates this: `ReusedRefreshTokenError` carries `self.user_id` "for incident-response logging", and `refresh_tokens.revoke_all_for_user` notes that blast-radius logging is wanted. `FILE_STRUCTURE.md` reserves `src/api/logging.py` for it. Log the user id only, never the token or its hash.
-
-**Effort:** S
-**Priority:** P0
-**Depends on:** None
-
-### Re-authentication on `DELETE /me`
-
-**What:** Require the current password in the request body (verified off-thread) or a freshly minted token, and consider a short grace period before the cascade fires.
-
-**Why:** Account erasure is irreversible and cascades to `refresh_token`, `owned_garment`, `fit_signal` and `recommendation`. A leaked or borrowed 15-minute access token is currently enough to destroy everything a user owns. The same token also fetches the full GDPR dump from `GET /me/export`.
-
-**Context:** `routes/me.py::delete_me`. These are the two highest-consequence operations in the API and neither is stepped up.
-
-**Effort:** S
-**Priority:** P0
-**Depends on:** None
-
 ## Backend — correctness and consistency
 
 ### Wire use-case conditioning into matching
@@ -228,6 +178,13 @@ database, so none of them are speculative.
 **Depends on:** None
 
 ## Completed
+
+**2026-09-11 — all four P0s closed.**
+
+- **Cache `get_settings()`** — `@lru_cache(maxsize=1)`, `env_file` anchored to an absolute path so the loaded values no longer depend on the process CWD. 0.548 ms/call of blocking disk I/O per JWT operation is now 0.00003 ms. An autouse fixture in `tests/conftest.py` clears the cache around every test, and each `_jwt_secret` fixture clears it after `setenv`.
+- **Trusted-proxy handling** — new `trusted_proxy_cidrs` setting (empty by default, so nothing is trusted). When the peer is inside a configured network, `X-Forwarded-For` is walked right-to-left, skipping trusted hops, and the first untrusted address is billed. Client-forged left-hand entries are ignored; an unparseable CIDR is logged and does not widen trust.
+- **Structured logging** — `src/api/logging.py` emits one JSON object per event with a stable dot-separated event name. Wired at `auth.login.failed`, `auth.refresh.replayed`, `auth.token.unknown_subject`, `me.account.erased` and `me.account.erase_denied`. No emails, tokens or token hashes are ever logged; `user_id` only.
+- **Re-authentication on `DELETE /me`** — the request body now carries the current password, verified off the event loop. Note for the mobile clients: httpx's convenience `.delete()` takes no body, so the tests go through `client.request`. DELETE-with-a-body is legal and FastAPI serves it, but not every HTTP library exposes it on the convenience method.
 
 See `docs/PHASE_1_TICKETS.md` for the 20 Phase 1 tickets, and the
 "Pre-landing review" entry in `docs/PROJECT_PLAN.md` for the ten findings
