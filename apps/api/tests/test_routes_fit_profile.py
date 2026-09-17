@@ -494,6 +494,42 @@ async def test_malformed_stored_measurement_fails_loudly(
         )
 
 
+async def test_non_numeric_stored_measurement_fails_loudly(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The right shape with the wrong kind of value inside it.
+
+    ``{"value": "54.0"}`` is what a JSON import that stringified its numbers
+    leaves behind, and ``{"value": true}`` is what a bool sneaks through as —
+    ``isinstance(True, int)`` is true, so a plain numeric check would accept
+    it and feed 1.0 cm into the posterior. Both have to raise for the same
+    reason the flat-shape row does: a garment that contributes no evidence
+    still counts toward ``sample_size``, so the profile silently reports
+    confidence it does not have.
+    """
+    import sqlalchemy as sa
+
+    from api.models import OwnedGarment
+    from api.services.fit_profile import MalformedMeasurementError, load_closet_snapshot
+
+    user = await make_user(db_session)
+    headers = await headers_for(db_session, user)
+    created = await client.post(GARMENTS, json=garment_body(), headers=headers)
+    garment_id = sa.cast(created.json()["id"], sa.Uuid())
+
+    for bad_value in ("54.0", True):
+        stored = measurements()
+        stored["chest"]["value"] = bad_value
+        await db_session.execute(
+            sa.update(OwnedGarment).where(OwnedGarment.id == garment_id).values(measurements=stored)
+        )
+
+        with pytest.raises(MalformedMeasurementError, match="non-numeric"):
+            await load_closet_snapshot(
+                user, OwnedGarmentRepository(db_session), FitSignalRepository(db_session)
+            )
+
+
 def test_chest_guide_text_matches_the_declared_range() -> None:
     """PRD §5.1 says "pit-to-pit doubled" and §5.2 caps chest at 80 cm; a
     doubled medium is ~108. The range carries the number and the validator

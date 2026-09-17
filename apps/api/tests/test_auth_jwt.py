@@ -17,6 +17,7 @@ restarting the process.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -278,3 +279,64 @@ async def test_rotate_treats_a_lost_race_as_replay(db_session: AsyncSession) -> 
     other = await repo.get_by_hash(auth_jwt._hash_refresh(second))
     assert other is not None
     assert other.revoked_at is not None
+
+
+async def test_rotate_treats_a_lost_update_as_replay(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other shape of the same race, and the only one the SELECT cannot
+    see: the row still reads as live when ``rotate`` fetches it, and the
+    compare-and-swap UPDATE then matches zero rows because a concurrent
+    rotation landed in between.
+
+    ``test_rotate_treats_a_lost_race_as_replay`` above exercises the
+    already-revoked branch, which returns before the UPDATE runs — so
+    without this, the branch that reads ``mark_revoked``'s return value has
+    nothing pinning it, and dropping it would silently mint a second live
+    chain for whoever wins the race.
+    """
+    user = await make_user(db_session)
+    repo = RefreshTokenRepository(db_session)
+    _, first = await issue_pair(user.id, repo)
+    _, second = await issue_pair(user.id, repo)
+
+    async def _lost_the_race(self: RefreshTokenRepository, id: object) -> bool:
+        return False
+
+    monkeypatch.setattr(RefreshTokenRepository, "mark_revoked", _lost_the_race)
+
+    with pytest.raises(ReusedRefreshTokenError):
+        await rotate(first, repo)
+
+    monkeypatch.undo()
+    # The loser still raises the alarm: the whole chain goes, not just this row.
+    other = await repo.get_by_hash(auth_jwt._hash_refresh(second))
+    assert other is not None
+    assert other.revoked_at is not None
+
+
+def test_decode_rejects_an_unknown_token_type() -> None:
+    """A JWT signed with our own active key but carrying a ``typ`` this build
+    does not know — what a rolled-back deploy sees once a third token flavour
+    ships. It must be refused rather than coerced into access or refresh,
+    which is the difference between "unrecognized credential" and "treated as
+    the most permissive thing we can parse".
+    """
+    import jwt as pyjwt
+
+    now = datetime.now(UTC)
+    token = pyjwt.encode(
+        {
+            "sub": str(uuid4()),
+            "typ": "impersonation",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+            "jti": uuid4().hex,
+        },
+        auth_jwt._secret(),
+        algorithm=auth_jwt.ALGORITHM,
+        headers={"kid": auth_jwt.KEY_ID},
+    )
+
+    with pytest.raises(InvalidTokenError, match="unknown token type"):
+        decode(token)

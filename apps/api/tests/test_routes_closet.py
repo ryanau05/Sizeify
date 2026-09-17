@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.auth import jwt as auth_jwt
 from api.config import get_settings
 from api.models import GarmentCategory, OwnedGarment
+from api.repositories import GarmentCategoryRepository
 from api.repositories.refresh_tokens import RefreshTokenRepository
 from api.seeds.garment_categories import (
     MENS_BUTTON_DOWN_SHIRT_ID,
@@ -668,3 +669,32 @@ async def test_closet_size_is_capped(
     assert (
         await client.post(GARMENTS, json=garment_body(brand="Now fits"), headers=headers)
     ).status_code == 201
+
+
+async def test_unseeded_category_is_a_500_that_names_the_fix(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The category row owns the measurement schema every write validates
+    against, so a database that never ran the seed cannot answer this request
+    at all.
+
+    That is the server being misconfigured, not the client sending something
+    wrong — hence 500 rather than the 422 the category gate returns, and a
+    body carrying the command that fixes it. Without this, the failure mode
+    on a fresh deployment is an unexplained crash on the first garment a user
+    tries to save.
+    """
+    headers = await auth_headers(db_session)
+
+    # Deleting the row is not an option — brand_product references it — so the
+    # lookup is blinded instead, which is what an unseeded database looks like
+    # from the handler's side.
+    async def _unseeded(self: GarmentCategoryRepository, id: str) -> GarmentCategory | None:
+        return None
+
+    monkeypatch.setattr(GarmentCategoryRepository, "get", _unseeded)
+
+    response = await client.post(GARMENTS, json=garment_body(), headers=headers)
+
+    assert response.status_code == 500
+    assert "api.seeds.garment_categories" in response.json()["detail"]

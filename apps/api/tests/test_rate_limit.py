@@ -247,6 +247,31 @@ def test_all_hops_trusted_falls_back_to_the_peer() -> None:
     assert middleware._client_ip(_scope("10.0.0.5", "10.0.0.7, 10.0.0.8")) == "10.0.0.5"
 
 
+def test_trusted_proxy_without_a_forwarded_header_bills_the_peer() -> None:
+    """A request that reaches us from a trusted proxy carrying no
+    ``X-Forwarded-For`` at all — a health check, a probe, or an LB that has
+    not been configured to append one.
+
+    There is no client address to recover, so the peer is the only honest
+    answer. It must not fall over on the empty header list either: the header
+    walk is the one part of the limiter that runs before routing, so an
+    exception here is a 500 on every request behind that proxy.
+    """
+    middleware = _middleware(["10.0.0.0/8"])
+
+    assert middleware._client_ip(_scope("10.0.0.5")) == "10.0.0.5"
+
+
+def test_unparseable_forwarded_entries_are_not_trusted() -> None:
+    """Some proxies append the literal ``unknown`` when they cannot determine
+    a peer. It parses as neither IPv4 nor IPv6, so it cannot be inside a
+    trusted network — and treating a parse failure as "trusted, skip it"
+    would let a client walk the header back to an entry it controls."""
+    middleware = _middleware(["10.0.0.0/8"])
+
+    assert middleware._client_ip(_scope("10.0.0.5", "203.0.113.9, unknown")) == "unknown"
+
+
 def test_unparseable_trusted_cidr_does_not_widen_trust() -> None:
     """A typo in deployment config must not take the API down, and must not
     silently trust everything either."""

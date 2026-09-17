@@ -33,6 +33,7 @@ from api.config import get_settings
 from api.deps import get_session
 from api.main import create_app
 from api.models import RefreshToken, User
+from api.repositories.users import UserRepository
 
 CONSENT_AT = "2026-09-09T10:30:00Z"
 PASSWORD = "Str0ng-Passphrase"
@@ -241,6 +242,37 @@ async def test_signup_is_case_insensitive_about_existing_addresses(
             .where(sa.func.lower(User.email) == "alice@example.com")
         )
     ).scalar_one() == 1
+
+
+async def test_signup_losing_the_unique_race_is_still_202(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two concurrent signups for one address: the loser's pre-check read
+    "free" and the UNIQUE index decided otherwise.
+
+    Simulated by blinding ``get_by_email`` — the handler then walks exactly
+    the path the loser of a real race walks, into the ``IntegrityError`` the
+    INSERT raises. It has to answer with the same 202 as every other signup,
+    because a 500 here is the account-existence oracle the uniform response
+    exists to close, reachable by anyone willing to send two requests at once.
+    """
+    await make_user(db_session, email="alice@example.com")
+
+    async def _sees_nothing(self: UserRepository, email: str) -> User | None:
+        return None
+
+    monkeypatch.setattr(UserRepository, "get_by_email", _sees_nothing)
+
+    response = await client.post("/auth/signup", json=signup_body())
+
+    assert response.status_code == 202
+    monkeypatch.undo()
+
+    # Byte-identical to an ordinary signup for a free address: the race
+    # loser is not distinguishable from the winner by anything a client sees.
+    ordinary = await client.post("/auth/signup", json=signup_body(email="nobody@example.com"))
+    assert ordinary.status_code == 202
+    assert response.json() == ordinary.json()
 
 
 async def test_signup_then_login_round_trip(client: AsyncClient) -> None:

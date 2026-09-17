@@ -85,3 +85,24 @@ async def test_delete_removes_row(db_session: AsyncSession) -> None:
 async def test_delete_missing_returns_false(db_session: AsyncSession) -> None:
     repo = OwnedGarmentRepository(db_session)
     assert await repo.delete(uuid4()) is False
+
+
+async def test_list_for_user_honours_a_limit(db_session: AsyncSession) -> None:
+    """The default is 100, not unbounded: a caller that forgets ``limit=None``
+    gets a silently short closet rather than an error.
+
+    Every v1 caller passes ``limit=None`` deliberately (``GET /closet``, the
+    GDPR export, the fit-profile builder), so nothing in production exercises
+    the bounded path today — which is exactly why the contract is pinned here
+    instead of discovered by the first paging caller.
+    """
+    user = await make_user(db_session)
+    category = await make_garment_category(db_session)
+    for _ in range(4):
+        await make_owned_garment(db_session, user=user, category=category)
+
+    repo = OwnedGarmentRepository(db_session)
+
+    assert len(await repo.list_for_user(user.id, limit=2)) == 2
+    assert len(await repo.list_for_user(user.id, limit=None)) == 4
+    assert len(await repo.list_for_user(user.id, limit=2, offset=3)) == 1
