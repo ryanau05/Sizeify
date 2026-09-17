@@ -96,6 +96,11 @@ class SignupRequest(BaseModel):
     just requires *eventual* capture, not signup-time capture.
     """
 
+    # Same guard as the closet bodies. Without it a mistyped
+    # ``stated_fit_preference`` was silently discarded and signup still
+    # returned 202, so the user's onboarding answer vanished.
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
     password: _NewPasswordField
     # GDPR/CCPA: explicit consent timestamp. Required — omitting it is a
@@ -154,6 +159,10 @@ class SignupAccepted(BaseModel):
 class LoginRequest(BaseModel):
     """``POST /auth/login`` request body."""
 
+    # Same guard as the closet bodies: an unexpected key is a client bug
+    # worth surfacing, not swallowing.
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
     password: _SubmittedPasswordField
 
@@ -164,6 +173,10 @@ class RefreshRequest(BaseModel):
     The refresh token is single-use (TKT-P1-06): reusing a rotated token
     returns 401 and revokes the user's entire refresh-token chain.
     """
+
+    # Same guard as the closet bodies: an unexpected key is a client bug
+    # worth surfacing, not swallowing.
+    model_config = ConfigDict(extra="forbid")
 
     refresh_token: str = Field(min_length=1)
 

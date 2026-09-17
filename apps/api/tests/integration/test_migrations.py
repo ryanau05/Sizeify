@@ -43,7 +43,7 @@ API_ROOT = Path(__file__).resolve().parents[2]
 #: The revision ``upgrade head`` must land on. Hard-coded rather than read back
 #: from the scripts so that adding a migration without updating this test is a
 #: deliberate act, not a silent one.
-HEAD_REVISION = "0005_user_email_ci"
+HEAD_REVISION = "0006_fit_signal_ix"
 
 #: The last revision before credentials/consent — the point a pre-auth
 #: database would have been sitting at when TKT-P1-07 shipped.

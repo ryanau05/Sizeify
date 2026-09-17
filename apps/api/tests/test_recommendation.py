@@ -523,3 +523,37 @@ def test_fit_notes_describe_the_variant_that_was_matched() -> None:
     gym = recommend(_profile_with_gym_variant(), SIZES, use_case="gym")
 
     assert gym.primary.fit_notes == ["Chest: right in your preferred range."]
+
+
+def test_reference_garments_are_ranked_against_the_variant_that_was_matched() -> None:
+    """Reference garments must be scored on the same numbers the ranking used.
+
+    ``per_dimension_deltas`` holds ``candidate − preferred``, so recovering the
+    candidate's own measurement means adding the delta back to *the same*
+    preferred value the match used. ``_relevance`` read the unconditioned
+    ``fit_profile.dimensions`` while the deltas had been computed against the
+    use-case variant, so whenever a variant existed the recovered measurement
+    was off by ``variant.preferred_cm − dimensions.preferred_cm``.
+
+    Here that gap is 4 cm: chest prefers 54.0 normally and 58.0 at the gym.
+    Conditioned on "gym" the winning size is L (58.0), so the closet garment
+    that actually resembles it is the 58 cm one. Under the bug the candidate
+    was reconstructed as 54.0 and the 54 cm garment was cited instead — the
+    user is shown the wrong shirt as the reason for the recommendation, which
+    is one of PRD §5.4's four mandatory components.
+    """
+    slim = ReferenceGarment("Slim oxford", "b", "M", OverallRating.LOVE, {"chest": 54.0}, ("gym",))
+    roomy = ReferenceGarment("Roomy tee", "b", "L", OverallRating.LOVE, {"chest": 58.0}, ("gym",))
+    profile_ = FitProfile(
+        category_id=CATEGORY,
+        maturity=ProfileMaturity.MATURE,
+        sample_size=6,
+        dimensions={"chest": DimensionStat(54.0, 0.5, 6)},
+        references=(slim, roomy),
+        use_case_variants={"gym": {"chest": DimensionStat(58.0, 0.5, 6)}},
+    )
+
+    gym = recommend(profile_, SIZES, use_case="gym")
+
+    assert gym.primary.size_label == "L"
+    assert [ref.label for ref in gym.reference_garments][0] == "Roomy tee"

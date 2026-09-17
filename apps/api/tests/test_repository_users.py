@@ -138,3 +138,29 @@ async def test_case_variant_emails_cannot_both_exist(db_session: AsyncSession) -
 
     with pytest.raises(sqlalchemy.exc.IntegrityError):
         await repo.create(**user_fields(email="DUPE@example.com"))
+
+
+def test_user_email_lower_index_matches_migration_0005() -> None:
+    """The ORM index must render the same DDL migration 0005 creates.
+
+    ``sa.func.lower("email")`` passes a Python *string*, so the model rendered
+    ``lower('email')`` — a constant expression, not the column. Postgres
+    accepts it and it makes the whole table single-row: the second insert
+    fails with ``Key (lower('email'::text))=(email) already exists``.
+
+    Nothing builds schema from metadata today, so the drift was latent, and
+    ``alembic check`` cannot catch it either — expression indexes are skipped
+    during reflection. That is exactly why it needs a test: the model's stated
+    constraint was a lie that any future metadata-driven path would have
+    materialised as a one-user-maximum database.
+    """
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    from api.models.user import User
+
+    index = next(i for i in User.__table__.indexes if i.name == "uq_user_email_lower")
+    ddl = str(CreateIndex(index).compile(dialect=postgresql.dialect()))
+
+    assert "lower(email)" in ddl, ddl
+    assert "lower('email')" not in ddl, f"index is on a constant, not the column: {ddl}"

@@ -162,7 +162,9 @@ def _fit_notes_for(dimensions: Mapping[str, DimensionStat], size: RankedSize) ->
     return notes
 
 
-def _relevance(ref: _RefGarment, size: RankedSize, fit_profile: FitProfile) -> float:
+def _relevance(
+    ref: _RefGarment, size: RankedSize, dimensions: Mapping[str, DimensionStat]
+) -> float:
     """Lower = more similar to the recommended size. Absolute cm gap on shared
     dimensions.
 
@@ -175,11 +177,20 @@ def _relevance(ref: _RefGarment, size: RankedSize, fit_profile: FitProfile) -> f
 
     ``per_dimension_deltas`` holds ``candidate_effective − preferred``, so the
     candidate's own measurement is recovered by adding the delta back.
+
+    Takes the dimension map rather than the whole profile, for the same reason
+    ``_fit_notes_for`` does: a use-case-conditioned match scores against a
+    variant, so the deltas were computed against the variant's ``preferred_cm``
+    and only add back to the right number against that same map. Reading
+    ``fit_profile.dimensions`` here — as this used to — recovered a candidate
+    measurement off by ``variant.preferred_cm - dimensions.preferred_cm``
+    whenever a variant existed, which silently mis-ranked the reference
+    garments the recommendation cites (PRD §5.4).
     """
     total = 0.0
     for dim, delta in size.per_dimension_deltas.items():
         if dim in ref.measurements_cm:
-            candidate_cm = fit_profile.dimensions[dim].preferred_cm + delta
+            candidate_cm = dimensions[dim].preferred_cm + delta
             total += abs(ref.measurements_cm[dim] - candidate_cm)
     # Slight boost for love/like garments so they surface first when relevant.
     rating_bonus = (
@@ -189,7 +200,10 @@ def _relevance(ref: _RefGarment, size: RankedSize, fit_profile: FitProfile) -> f
 
 
 def _reference_garments_for(
-    fit_profile: FitProfile, size: RankedSize, limit: int = 2
+    fit_profile: FitProfile,
+    size: RankedSize,
+    dimensions: Mapping[str, DimensionStat],
+    limit: int = 2,
 ) -> list[ReferenceGarmentOut]:
     # No secondary key on purpose. ``sorted`` is stable and the input order is
     # already deterministic — ``references`` comes from the closet in
@@ -198,7 +212,7 @@ def _reference_garments_for(
     # is reproducible and meaningful; sorting on the label instead would have
     # been reproducible and arbitrary ("Lululemon" before "Uniqlo" says
     # nothing about which shirt informed the recommendation).
-    refs = sorted(fit_profile.references, key=lambda r: _relevance(r, size, fit_profile))
+    refs = sorted(fit_profile.references, key=lambda r: _relevance(r, size, dimensions))
     out: list[ReferenceGarmentOut] = []
     for ref in refs[:limit]:
         rated = (
@@ -284,7 +298,7 @@ def recommend(
         size_label=best.size_label,
         fit_notes=_fit_notes_for(dimensions, best),
     )
-    references = _reference_garments_for(fit_profile, best)
+    references = _reference_garments_for(fit_profile, best, dimensions)
 
     alternate: SizeCandidate | None = None
     if confidence < CONFIDENCE_TWO_CANDIDATE_THRESHOLD and second is not None:

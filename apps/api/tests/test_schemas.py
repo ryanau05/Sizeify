@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -448,3 +449,42 @@ def test_export_response_round_trip() -> None:
             recommendations=[recommendation],
         )
     )
+
+
+@pytest.mark.parametrize(
+    ("model", "valid", "unknown_field"),
+    [
+        (
+            SignupRequest,
+            {
+                "email": "alice@example.com",
+                "password": "Sizeify-Pass-1",
+                "privacy_consent_accepted_at": "2026-09-17T00:00:00Z",
+            },
+            "stated_fit_pref",  # typo of stated_fit_preference
+        ),
+        (
+            LoginRequest,
+            {"email": "alice@example.com", "password": "Sizeify-Pass-1"},
+            "scope",
+        ),
+        (RefreshRequest, {"refresh_token": "a.b.c"}, "user_id"),
+    ],
+)
+def test_auth_request_bodies_reject_unknown_fields(
+    model: type[BaseModel], valid: dict[str, Any], unknown_field: str
+) -> None:
+    """Auth bodies forbid extras, like every other request body.
+
+    The closet and ``/me`` bodies all set ``extra="forbid"``; these three did
+    not, so an unknown key was a 422 on every closet verb and silently dropped
+    on every auth verb. Concretely, ``POST /auth/signup`` with a mistyped
+    ``stated_fit_pref`` returned 202 and discarded the user's onboarding
+    answer — the exact failure the closet bodies added the guard to prevent.
+    """
+    assert model.model_validate(valid) is not None
+
+    with pytest.raises(ValidationError) as exc:
+        model.model_validate({**valid, unknown_field: "x"})
+
+    assert any(unknown_field in str(error["loc"]) for error in exc.value.errors())

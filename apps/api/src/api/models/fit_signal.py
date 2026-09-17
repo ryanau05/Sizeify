@@ -45,6 +45,14 @@ _source_enum = PgEnum(*SOURCE_VALUES, name="fit_signal_source", create_type=Fals
 class FitSignal(Base):
     __tablename__ = "fit_signal"
 
+    __table_args__ = (
+        # Migration 0006. Postgres does not index a foreign key for you, and
+        # ``list_for_user`` joins on this column on the fit-profile build path
+        # (PRD §9.2, 100 ms). ``created_at`` rides along because the same
+        # query orders by it, so the sort comes off the index too.
+        sa.Index("ix_fit_signal_owned_garment_id", "owned_garment_id", "created_at"),
+    )
+
     id: Mapped[UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid4)
     owned_garment_id: Mapped[UUID] = mapped_column(
         sa.Uuid(),

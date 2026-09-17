@@ -31,7 +31,7 @@ class User(Base):
         # (``UserRepository.get_by_email``), so without this a pair of
         # case-variant rows could coexist and login became a coin flip
         # between them.
-        sa.Index("uq_user_email_lower", sa.func.lower("email"), unique=True),
+        sa.Index("uq_user_email_lower", sa.func.lower(sa.column("email")), unique=True),
     )
 
     id: Mapped[UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid4)
