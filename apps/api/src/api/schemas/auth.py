@@ -120,6 +120,37 @@ class SignupRequest(BaseModel):
         return value.astimezone(UTC)
 
 
+class SignupAccepted(BaseModel):
+    """``POST /auth/signup`` response — identical whether or not the address
+    was already registered.
+
+    Signup used to return 201 plus a token pair, which made it an
+    account-existence oracle: a 409 said "this address is registered" to
+    anyone who asked. Login is carefully defended against exactly that (a
+    dummy argon2 verify equalizes the response time so an unknown email and a
+    wrong password are indistinguishable), and signup undercut that work.
+
+    Returning tokens and being non-enumerable are mutually exclusive: a token
+    pair can only be issued for an account we just created, so its presence
+    *is* the answer. Hence 202 and no tokens.
+
+    The client follows with ``POST /auth/login`` using the same credentials.
+    For a genuinely new account that succeeds immediately — the password was
+    just set — so onboarding is still one tap with one extra round trip. For
+    an address that was already taken the password was never applied, so login
+    returns its ordinary 401 and the caller learns nothing it did not already
+    know.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Fixed text. Anything derived from whether the account existed would
+    #: reintroduce the oracle this response exists to close.
+    detail: Literal[
+        "If that email address is available, an account has been created. Sign in to continue."
+    ] = "If that email address is available, an account has been created. Sign in to continue."
+
+
 class LoginRequest(BaseModel):
     """``POST /auth/login`` request body."""
 

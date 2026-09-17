@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+import sqlalchemy as sa
 from _factories import TEST_PASSWORD, make_user
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
@@ -44,6 +45,20 @@ def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
 
 
+async def _register_and_sign_in(client: AsyncClient) -> dict[str, Any]:
+    """Register then sign in, returning the login token pair.
+
+    Signup issues no tokens on purpose (see ``SignupAccepted``), so the tests
+    that need a refresh token get it from the login that follows.
+    """
+    assert (await client.post("/auth/signup", json=signup_body())).status_code == 202
+    login = await client.post(
+        "/auth/login", json={"email": "alice@example.com", "password": PASSWORD}
+    )
+    assert login.status_code == 200
+    return dict(login.json())
+
+
 def signup_body(**overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "email": "alice@example.com",
@@ -59,29 +74,27 @@ def signup_body(**overrides: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def test_signup_returns_token_pair(client: AsyncClient) -> None:
+async def test_signup_returns_no_tokens(client: AsyncClient) -> None:
+    """202 with a fixed body, and deliberately no token pair.
+
+    A pair can only be issued for an account we just created, so its presence
+    would answer "did this address already exist" — the oracle the uniform
+    response exists to close.
+    """
     response = await client.post("/auth/signup", json=signup_body())
 
-    assert response.status_code == 201
-    payload = response.json()
-    assert payload["token_type"] == "bearer"
-    assert payload["access_token"] != payload["refresh_token"]
-    assert payload["access_expires_in"] > 0
-    assert payload["refresh_expires_in"] > payload["access_expires_in"]
-
-    # Tokens are real and belong to the same subject.
-    access = auth_jwt.decode(payload["access_token"])
-    refresh = auth_jwt.decode(payload["refresh_token"])
-    assert access.token_type is auth_jwt.TokenType.ACCESS
-    assert refresh.token_type is auth_jwt.TokenType.REFRESH
-    assert access.user_id == refresh.user_id
+    assert response.status_code == 202
+    body = response.json()
+    assert set(body) == {"detail"}
+    assert "access_token" not in body
+    assert "refresh_token" not in body
 
 
 async def test_signup_persists_user_with_consent_and_hashed_password(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     response = await client.post("/auth/signup", json=signup_body(stated_fit_preference="slim"))
-    assert response.status_code == 201
+    assert response.status_code == 202
 
     user = (
         await db_session.execute(select(User).where(User.email == "alice@example.com"))
@@ -95,11 +108,12 @@ async def test_signup_persists_user_with_consent_and_hashed_password(
     assert user.password_hash.startswith("$argon2id$")
 
 
-async def test_signup_persists_refresh_token_row(
+async def test_signup_does_not_mint_a_refresh_token(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    response = await client.post("/auth/signup", json=signup_body())
-    assert response.status_code == 201
+    """The token chain starts at the first login, not at signup — signup has
+    no tokens to persist."""
+    assert (await client.post("/auth/signup", json=signup_body())).status_code == 202
 
     user = (
         await db_session.execute(select(User).where(User.email == "alice@example.com"))
@@ -109,10 +123,20 @@ async def test_signup_persists_refresh_token_row(
         .scalars()
         .all()
     )
+    assert rows == []
+
+    # …and the first login starts it.
+    assert (
+        await client.post("/auth/login", json={"email": "alice@example.com", "password": PASSWORD})
+    ).status_code == 200
+    rows = (
+        (await db_session.execute(select(RefreshToken).where(RefreshToken.user_id == user.id)))
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
     assert rows[0].revoked_at is None
     # The row stores a SHA-256 hex digest, never the token itself.
-    assert rows[0].token_hash != response.json()["refresh_token"]
     assert len(rows[0].token_hash) == 64
 
 
@@ -158,47 +182,84 @@ async def test_signup_rejects_malformed_email(client: AsyncClient) -> None:
     assert ("body", "email") in fields
 
 
-async def test_signup_duplicate_email_is_409(client: AsyncClient) -> None:
-    assert (await client.post("/auth/signup", json=signup_body())).status_code == 201
+async def test_signup_does_not_reveal_that_an_address_is_taken(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The finding this closes: signup used to answer 409 for a registered
+    address, which told any prober who has an account here. Login is
+    timing-equalized against exactly that, so signup undercut it."""
+    first = await client.post("/auth/signup", json=signup_body())
+    second = await client.post("/auth/signup", json=signup_body())
+    fresh = await client.post("/auth/signup", json=signup_body(email="nobody@example.com"))
 
-    response = await client.post("/auth/signup", json=signup_body())
+    assert first.status_code == second.status_code == fresh.status_code == 202
+    assert first.json() == second.json() == fresh.json()
 
-    assert response.status_code == 409
+    # And the duplicate did not overwrite the original account's password.
+    assert (
+        await client.post("/auth/login", json={"email": "alice@example.com", "password": PASSWORD})
+    ).status_code == 200
+    assert (
+        await db_session.execute(
+            select(sa.func.count()).select_from(User).where(User.email == "alice@example.com")
+        )
+    ).scalar_one() == 1
 
 
-async def test_signup_duplicate_email_is_case_insensitive(client: AsyncClient) -> None:
-    assert (await client.post("/auth/signup", json=signup_body())).status_code == 201
+async def test_a_taken_address_cannot_be_hijacked_by_signing_up_again(
+    client: AsyncClient,
+) -> None:
+    """Silence must not mean "overwrite". A second signup for a live address
+    with a different password must leave the original credentials intact."""
+    assert (await client.post("/auth/signup", json=signup_body())).status_code == 202
+    assert (
+        await client.post("/auth/signup", json=signup_body(password="Attacker-Chosen-1"))
+    ).status_code == 202
 
-    response = await client.post("/auth/signup", json=signup_body(email="ALICE@example.com"))
+    assert (
+        await client.post(
+            "/auth/login", json={"email": "alice@example.com", "password": "Attacker-Chosen-1"}
+        )
+    ).status_code == 401
+    assert (
+        await client.post("/auth/login", json={"email": "alice@example.com", "password": PASSWORD})
+    ).status_code == 200
 
-    assert response.status_code == 409
 
+async def test_signup_is_case_insensitive_about_existing_addresses(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    assert (await client.post("/auth/signup", json=signup_body())).status_code == 202
 
-# ---------------------------------------------------------------------------
-# Login.
-# ---------------------------------------------------------------------------
+    variant = await client.post("/auth/signup", json=signup_body(email="ALICE@example.com"))
+
+    assert variant.status_code == 202
+    assert (
+        await db_session.execute(
+            select(sa.func.count())
+            .select_from(User)
+            .where(sa.func.lower(User.email) == "alice@example.com")
+        )
+    ).scalar_one() == 1
 
 
 async def test_signup_then_login_round_trip(client: AsyncClient) -> None:
-    """The ticket's headline acceptance criterion."""
-    signup = await client.post("/auth/signup", json=signup_body())
-    assert signup.status_code == 201
+    """The ticket's headline acceptance criterion, and what a client's "sign
+    up" button now does: register, then immediately sign in."""
+    registered = await client.post("/auth/signup", json=signup_body())
+    assert registered.status_code == 202
 
     login = await client.post(
         "/auth/login", json={"email": "alice@example.com", "password": PASSWORD}
     )
 
     assert login.status_code == 200
-    assert login.json()["access_token"] != signup.json()["access_token"]
-    # Same account, new credentials.
-    assert (
-        auth_jwt.decode(login.json()["access_token"]).user_id
-        == auth_jwt.decode(signup.json()["access_token"]).user_id
-    )
+    assert login.json()["access_token"]
+    assert auth_jwt.decode(login.json()["access_token"]).token_type is auth_jwt.TokenType.ACCESS
 
 
 async def test_login_is_case_insensitive_on_email(client: AsyncClient) -> None:
-    assert (await client.post("/auth/signup", json=signup_body())).status_code == 201
+    assert (await client.post("/auth/signup", json=signup_body())).status_code == 202
 
     response = await client.post(
         "/auth/login", json={"email": "Alice@Example.com", "password": PASSWORD}
@@ -208,7 +269,7 @@ async def test_login_is_case_insensitive_on_email(client: AsyncClient) -> None:
 
 
 async def test_login_wrong_password_is_401(client: AsyncClient) -> None:
-    assert (await client.post("/auth/signup", json=signup_body())).status_code == 201
+    assert (await client.post("/auth/signup", json=signup_body())).status_code == 202
 
     response = await client.post(
         "/auth/login", json={"email": "alice@example.com", "password": "Wr0ng-Password"}
@@ -219,7 +280,7 @@ async def test_login_wrong_password_is_401(client: AsyncClient) -> None:
 
 async def test_login_unknown_email_is_401_with_identical_body(client: AsyncClient) -> None:
     """No user enumeration: unknown email and wrong password are indistinguishable."""
-    assert (await client.post("/auth/signup", json=signup_body())).status_code == 201
+    assert (await client.post("/auth/signup", json=signup_body())).status_code == 202
 
     wrong_password = await client.post(
         "/auth/login", json={"email": "alice@example.com", "password": "Wr0ng-Password"}
@@ -260,7 +321,7 @@ async def test_login_against_a_user_with_an_unusable_hash_is_401(
 
 
 async def test_refresh_issues_a_new_pair(client: AsyncClient) -> None:
-    signup = (await client.post("/auth/signup", json=signup_body())).json()
+    signup = await _register_and_sign_in(client)
 
     response = await client.post("/auth/refresh", json={"refresh_token": signup["refresh_token"]})
 
@@ -275,7 +336,7 @@ async def test_refresh_issues_a_new_pair(client: AsyncClient) -> None:
 
 
 async def test_refresh_is_single_use(client: AsyncClient) -> None:
-    signup = (await client.post("/auth/signup", json=signup_body())).json()
+    signup = await _register_and_sign_in(client)
     assert (
         await client.post("/auth/refresh", json={"refresh_token": signup["refresh_token"]})
     ).status_code == 200
@@ -290,7 +351,7 @@ async def test_refresh_replay_revokes_the_whole_chain_and_commits_it(
 ) -> None:
     """The replay response is a security action, so it must survive the
     failed request's transaction rather than being rolled back with it."""
-    signup = (await client.post("/auth/signup", json=signup_body())).json()
+    signup = await _register_and_sign_in(client)
     rotated = (
         await client.post("/auth/refresh", json={"refresh_token": signup["refresh_token"]})
     ).json()
@@ -317,7 +378,7 @@ async def test_refresh_replay_revokes_the_whole_chain_and_commits_it(
 
 
 async def test_refresh_rejects_an_access_token(client: AsyncClient) -> None:
-    signup = (await client.post("/auth/signup", json=signup_body())).json()
+    signup = await _register_and_sign_in(client)
 
     response = await client.post("/auth/refresh", json={"refresh_token": signup["access_token"]})
 

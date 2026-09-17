@@ -1,25 +1,9 @@
 # TODOS
 
-## Backend
-
-### Signup account-existence oracle
-
-**What:** Return 202 with an identical body whether or not the address is taken, and deliver the outcome by email (the existing user gets a "someone tried to register your address" notice).
-
-**Why:** `POST /auth/signup` returns 409 with "An account with that email already exists", which tells an attacker which addresses are registered. Login is carefully defended against exactly this — a dummy argon2 hash equalizes the response time so an unknown email and a wrong password are indistinguishable — so signup undercuts that work.
-
-**Context:** `routes/auth.py`. The module docstring names the rate limiter as the mitigation, but it is per-credential-or-IP at 10/min, which a distributed prober outruns. This is the one finding from the Phase 1 pre-landing review left open, and it is left open deliberately: the fix needs a transactional email pipeline that does not exist yet, and building one to close a P3 would be the tail wagging the dog. Revisit when email lands (Phase 4 polish, alongside sign-in-with-Apple/Google).
-
-If the flow has to stay synchronous, the fallback is to accept the tradeoff explicitly and give signup a much tighter bucket than login.
-
-**Effort:** M
-**Priority:** P3
-**Depends on:** Transactional email
-
 ## Completed
 
-**2026-09-11 — 17 of the 18 pre-landing-review findings closed.** The one
-remaining is above, blocked on infrastructure that does not exist.
+**All 18 pre-landing-review findings are closed** (17 on 2026-09-11, the last
+on 2026-09-17). Nothing open.
 
 ### P0
 
@@ -47,6 +31,7 @@ remaining is above, blocked on infrastructure that does not exist.
 
 ### P3
 
+- **Signup no longer reveals whether an address is registered** — `POST /auth/signup` returns 202 with a fixed body either way, and no token pair. Issuing tokens and being non-enumerable are mutually exclusive: a pair can only exist for an account just created, so its presence *is* the answer. The client calls `/auth/login` next, which for a genuinely new account always succeeds. Verified: identical status, byte-identical body, identical headers, and median latency within 1.6% (argon2 runs on both paths before the lookup, so it dominates). This was originally deferred as needing transactional email; it does not — email only improves the case where a user who forgot they had an account signs up again and is not told, which remains the one rough edge.
 - **Password rehash on login** — `needs_rehash` plus an upgrade in the login transaction, so re-calibrating `MEMORY_COST_KIB` reaches accounts that already exist. Returns `False` for unparseable hashes, migration `0003`'s locked sentinel among them.
 - **Fifth place in the dimension rule** — CLAUDE.md now says "all five" and names `_DIM_LABEL`; `test_seed_garment_categories.py` pins it against the schema. A missing label degrades the push-notification wording rather than failing, which is exactly the silent degradation the rule exists to prevent.
 - **Retired demo rows cleared** — the five `owned_garment` rows and the `demo@sizeify.app` user left over from the retired capstone track are gone from the dev database. They were in the pre-Phase-1 flat measurement shape *and* on the doubled chest scale, invalid twice over under the agreed convention.

@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from uuid import UUID, uuid4
 
 import pytest
+from _api import signup_and_login
 from _factories import make_user
 from fastapi import FastAPI
 from httpx import AsyncClient
@@ -90,17 +91,9 @@ async def test_protected_endpoint_200s_with_a_valid_token(
 
 async def test_resolver_works_end_to_end_from_signup(client: AsyncClient) -> None:
     """The token a real client actually holds authenticates a real request."""
-    signup = await client.post(
-        "/auth/signup",
-        json={
-            "email": "alice@example.com",
-            "password": "Str0ng-Passphrase",
-            "privacy_consent_accepted_at": "2026-09-09T10:30:00Z",
-        },
-    )
-    assert signup.status_code == 201
+    access = await signup_and_login(client)
 
-    response = await client.get(PROTECTED, headers=bearer(signup.json()["access_token"]))
+    response = await client.get(PROTECTED, headers=bearer(access))
 
     assert response.status_code == 200
     assert response.json()["email"] == "alice@example.com"

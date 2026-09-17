@@ -116,10 +116,19 @@ Goal: a backend that can store a user's closet and run the matching engine in is
 > limiter's key space was attacker-controlled. Migration `0005` and 16 regression
 > tests came out of it.
 >
-> The remaining 18 findings were carried in `TODOS.md` and **17 were closed on
-> 2026-09-11** (all four P0s, all four P1s, all six P2s, three of four P3s).
-> The one still open is signup's account-existence oracle, which needs a
-> transactional email pipeline that does not exist yet.
+> The remaining 18 findings were carried in `TODOS.md` and **all 18 are now
+> closed** (17 on 2026-09-11, the last on 2026-09-17).
+>
+> The last one changed an API contract worth knowing about before the mobile
+> clients are built: **`POST /auth/signup` returns 202 and no tokens**, and
+> the same body whether or not the address was already registered. It used to
+> answer 409 for a taken address, which told any prober who has an account
+> here — undercutting the timing-equalized 401 that login goes to some trouble
+> to produce. Returning a token pair and being non-enumerable are mutually
+> exclusive, since a pair can only exist for an account just created. The
+> client therefore calls `POST /auth/login` immediately after signup; for a
+> genuinely new account that always succeeds, so onboarding is one tap with
+> one extra round trip.
 >
 > **Convention settled during the review:** chest is pit-to-pit **un-doubled**
 > (~54 cm). PRD §5.1's "pit-to-pit doubled" and PRD §5.2's 35–80 cm range
@@ -133,7 +142,7 @@ Deliverables:
 - Pydantic models for every request and response body. Reject raw dicts in route handlers in code review.
 - Auth: email + password via Argon2; JWT issuance with rotation. Sign-in-with-Apple and Google deferred to Phase 4 polish.
 - Endpoints:
-  - `POST /auth/signup`, `POST /auth/login`, `POST /auth/refresh`
+  - `POST /auth/signup` (202, no tokens — non-enumerable; client follows with login), `POST /auth/login`, `POST /auth/refresh`
   - `GET/POST/PATCH/DELETE /closet/garments`
   - `POST /closet/garments/{id}/fit-signals` (manual entry path for v1)
   - `GET /closet/fit-profile` (returns the constructed fit profile for the user)

@@ -19,6 +19,7 @@ from uuid import UUID
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+from _api import signup_and_login
 from _factories import (
     TEST_PASSWORD,
     make_brand_product,
@@ -199,15 +200,7 @@ async def test_old_refresh_token_cannot_be_rotated_back_into_access(
 async def test_deleted_account_cannot_log_back_in(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    signup = await client.post(
-        "/auth/signup",
-        json={
-            "email": "alice@example.com",
-            "password": "Str0ng-Passphrase",
-            "privacy_consent_accepted_at": "2026-09-09T10:30:00Z",
-        },
-    )
-    access = signup.json()["access_token"]
+    access = await signup_and_login(client)
 
     assert (await erase(client, access, SIGNUP_CONFIRM)).status_code == 204
 
@@ -221,21 +214,12 @@ async def test_deleted_account_cannot_log_back_in(
 async def test_the_email_becomes_reusable(client: AsyncClient, db_session: AsyncSession) -> None:
     """Erasure means erasure: the address is not reserved by a tombstone,
     so the same person can sign up again as a genuinely new account."""
-    body = {
-        "email": "alice@example.com",
-        "password": "Str0ng-Passphrase",
-        "privacy_consent_accepted_at": "2026-09-09T10:30:00Z",
-    }
-    first = await client.post("/auth/signup", json=body)
-    assert first.status_code == 201
-    await erase(client, first.json()["access_token"], SIGNUP_CONFIRM)
+    first_access = await signup_and_login(client)
+    await erase(client, first_access, SIGNUP_CONFIRM)
 
-    second = await client.post("/auth/signup", json=body)
+    second_access = await signup_and_login(client)
 
-    assert second.status_code == 201
-    new_id = auth_jwt.decode(second.json()["access_token"]).user_id
-    old_id = auth_jwt.decode(first.json()["access_token"]).user_id
-    assert new_id != old_id
+    assert auth_jwt.decode(second_access).user_id != auth_jwt.decode(first_access).user_id
 
 
 # ---------------------------------------------------------------------------

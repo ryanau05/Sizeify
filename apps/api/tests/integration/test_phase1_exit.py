@@ -31,6 +31,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+from _api import signup_and_login
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -298,16 +299,8 @@ async def seed_closet(
     reference garments (see HAND-COMPUTED EXPECTATION). Real closets are built
     over days; the fixture just makes that explicit.
     """
-    signup = await client.post(
-        "/auth/signup",
-        json={
-            "email": "exit-criterion@example.com",
-            "password": "Str0ng-Passphrase",
-            "privacy_consent_accepted_at": "2026-01-01T09:00:00Z",
-        },
-    )
-    assert signup.status_code == 201, signup.text
-    headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+    access = await signup_and_login(client, "exit-criterion@example.com")
+    headers = {"Authorization": f"Bearer {access}"}
 
     for day, entry in enumerate(CLOSET, start=1):
         created = await client.post(

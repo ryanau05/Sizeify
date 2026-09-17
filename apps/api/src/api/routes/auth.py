@@ -11,12 +11,18 @@ mounted under ``/auth/`` instead of when someone remembers a decorator.
 
 Error-response policy
 ---------------------
+No endpoint here reveals whether an account exists.
+
 Login returns one indistinguishable 401 for "no such email" and "wrong
 password", and spends the same argon2 work in both cases (see
-``_verify_credentials``). Signup necessarily leaks that an address is
-taken — it cannot both refuse duplicates and hide them — so the leak is
-confined to that one endpoint rather than spread across all three. The
-mitigation for signup is the rate limiter, not the response body.
+``_verify_credentials``).
+
+Signup returns the same 202 whether or not the address was taken. The earlier
+reading — that it "cannot both refuse duplicates and hide them" — was wrong in
+its premise: it only has to refuse *silently*. What it genuinely cannot do is
+hide the answer while also returning a token pair, since a pair can only exist
+for an account we just created. Dropping the tokens is what makes the rest
+possible; the client calls ``/auth/login`` next (see ``SignupAccepted``).
 
 Transactions
 ------------
@@ -46,7 +52,13 @@ from api.deps import (
 )
 from api.models import User
 from api.repositories.base import transaction
-from api.schemas.auth import LoginRequest, RefreshRequest, SignupRequest, TokenPair
+from api.schemas.auth import (
+    LoginRequest,
+    RefreshRequest,
+    SignupAccepted,
+    SignupRequest,
+    TokenPair,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +90,6 @@ def _invalid_refresh() -> HTTPException:
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired refresh token.",
         headers={"WWW-Authenticate": "Bearer"},
-    )
-
-
-def _email_taken() -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail="An account with that email already exists.",
     )
 
 
@@ -134,13 +139,6 @@ async def _verify_credentials(user: User | None, submitted_password: str) -> Use
     return user
 
 
-_EMAIL_TAKEN_RESPONSE: dict[int | str, dict[str, Any]] = {
-    status.HTTP_409_CONFLICT: {
-        "model": ErrorDetail,
-        "description": "An account already exists for that email address.",
-    }
-}
-
 _INVALID_CREDENTIALS_RESPONSE: dict[int | str, dict[str, Any]] = {
     status.HTTP_401_UNAUTHORIZED: {
         "model": ErrorDetail,
@@ -151,45 +149,71 @@ _INVALID_CREDENTIALS_RESPONSE: dict[int | str, dict[str, Any]] = {
 
 @router.post(
     "/signup",
-    status_code=status.HTTP_201_CREATED,
-    responses={**_EMAIL_TAKEN_RESPONSE, **RATE_LIMITED_RESPONSE},
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={**RATE_LIMITED_RESPONSE},
 )
 async def signup(
     body: SignupRequest,
     users: UserRepositoryDep,
-    refresh_tokens: RefreshTokenRepositoryDep,
-    settings: SettingsDep,
-) -> TokenPair:
-    """Create an account and return its first token pair.
+) -> SignupAccepted:
+    """Register an account. The response does not say whether it existed.
 
     ``privacy_consent_accepted_at`` is required by ``SignupRequest``, so a
     body without it is a 422 before this handler runs — there is no path
     that creates a user without a consent record (PRD §11).
+
+    No token pair, and the same 202 either way: see ``SignupAccepted`` for
+    why those two facts are the same fact. The client's next call is
+    ``POST /auth/login``.
     """
     # Hash before touching the session, and off the event loop. Argon2 is a
     # deliberate ~75-250 ms of pure CPU: there is no reason to hold a DB
     # transaction open across it, and no reason to block every other
     # in-flight request either (see ``_verify_credentials``).
+    #
+    # It also runs on *both* paths, before we know which one we are on, so the
+    # ~250 ms of hashing dominates the response time and the extra INSERT on
+    # the create path is not a timing side channel.
     password_hash = await anyio.to_thread.run_sync(auth_password.hash, body.password)
 
     try:
         async with transaction(users.session):
             if await users.get_by_email(body.email) is not None:
-                raise _email_taken()
+                _log_existing_address()
+                return SignupAccepted()
             user = await users.create(
                 email=body.email,
                 password_hash=password_hash,
                 privacy_consent_accepted_at=body.privacy_consent_accepted_at,
                 stated_fit_preference=body.stated_fit_preference,
             )
-            access, refresh = await auth_jwt.issue_pair(user.id, refresh_tokens)
-    except IntegrityError as exc:
+            logger.info("auth.signup.created", extra={"user_id": str(user.id)})
+    except IntegrityError:
         # The ``get_by_email`` check above loses to a concurrent signup for
-        # the same address; the UNIQUE index is what actually decides. Map
-        # the loser onto the same 409 the check would have produced.
-        raise _email_taken() from exc
+        # the same address; the UNIQUE index is what actually decides. The
+        # loser takes the same silent path as the check would have.
+        _log_existing_address()
+        return SignupAccepted()
 
-    return _token_pair(access, refresh, settings)
+    return SignupAccepted()
+
+
+def _log_existing_address() -> None:
+    """Record a signup attempt against an address that already exists.
+
+    Deliberately carries no user id and no email. The account owner is not the
+    one making this request, and attaching their identity to a stranger's
+    attempt would put a "these addresses are registered" trail in the log
+    store — rebuilding, for anyone who can read logs, exactly the oracle the
+    202 closes.
+
+    This is also where the "someone tried to register your address" notice
+    will hang once there is an email pipeline to send it through. Until then
+    the account owner is not told, which is the one thing this fix does not
+    solve: a user who forgot they had an account signs up, gets the same 202,
+    and then finds their new password does not log them in.
+    """
+    logger.info("auth.signup.existing_address")
 
 
 @router.post(
