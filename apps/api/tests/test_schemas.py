@@ -14,11 +14,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import uuid4
 
 import pytest
-from pydantic import BaseModel
+from _keys import TEST_PASSWORD
+from pydantic import BaseModel, ValidationError
 
+from api.main import create_app
 from api.schemas.auth import (
     LoginRequest,
     RefreshRequest,
@@ -45,7 +48,12 @@ from api.schemas.enums import (
     Verdict,
 )
 from api.schemas.fit_profile import DimensionPreference, FitProfileResponse
-from api.schemas.me import ExportResponse, RecommendationExport, UserExport
+from api.schemas.me import (
+    ExportResponse,
+    OwnedGarmentExport,
+    RecommendationExport,
+    UserExport,
+)
 
 
 def round_trip(instance: BaseModel) -> None:
@@ -107,8 +115,6 @@ def test_measurement_value_round_trip() -> None:
 
 def test_measurement_value_rejects_non_cm_unit() -> None:
     # Wire-contract invariant: stored measurements are cm-only (CLAUDE.md).
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         MeasurementValue(value=54.0, unit="in", source="manual_tape")  # type: ignore[arg-type]
 
@@ -116,8 +122,6 @@ def test_measurement_value_rejects_non_cm_unit() -> None:
 def test_measurement_value_rejects_unknown_source() -> None:
     # ``imported`` / ``cv_assisted`` reserved for forward-compat (PRD §A.9);
     # anything else is a typo.
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         MeasurementValue(value=54.0, unit="cm", source="ai_guessed")  # type: ignore[arg-type]
 
@@ -139,13 +143,40 @@ def test_owned_garment_create_round_trip() -> None:
 
 
 def test_owned_garment_update_round_trip_partial() -> None:
-    # PATCH semantics — only some fields populated.
-    round_trip(
-        OwnedGarmentUpdate(
-            overall_rating=OverallRating.LIKE,
-            size_label="L",
-        )
-    )
+    """PATCH semantics — only some fields populated.
+
+    Round-tripped with ``exclude_unset`` because that is the actual wire
+    format for a partial update. A full ``model_dump_json`` writes every
+    omitted field as an explicit ``null``, which is a different request:
+    ``{"brand": null}`` asks to clear a NOT NULL column and is now a 422.
+    """
+    partial = OwnedGarmentUpdate(overall_rating=OverallRating.LIKE, size_label="L")
+
+    rebuilt = OwnedGarmentUpdate.model_validate_json(partial.model_dump_json(exclude_unset=True))
+
+    assert rebuilt == partial
+    assert rebuilt.model_dump(exclude_unset=True) == {
+        "overall_rating": OverallRating.LIKE,
+        "size_label": "L",
+    }
+
+
+def test_owned_garment_update_rejects_clearing_a_not_null_column() -> None:
+    """``{"measurements": null}`` used to store ``'null'::jsonb`` — SQLAlchemy
+    maps Python ``None`` onto JSON null rather than SQL NULL, so the NOT NULL
+    constraint never fired and every subsequent read of that garment raised."""
+    for field in ("brand", "size_label", "measurements", "use_cases"):
+        with pytest.raises(ValidationError, match="cannot be cleared"):
+            OwnedGarmentUpdate(**{field: None})
+
+
+def test_owned_garment_update_still_allows_clearing_optional_fields() -> None:
+    cleared = OwnedGarmentUpdate(product_name=None, overall_rating=None)
+
+    assert cleared.model_dump(exclude_unset=True) == {
+        "product_name": None,
+        "overall_rating": None,
+    }
 
 
 def test_owned_garment_response_round_trip() -> None:
@@ -218,7 +249,7 @@ def test_signup_request_round_trip() -> None:
     round_trip(
         SignupRequest(
             email="alice@example.com",
-            password="correcthorsebatterystaple",
+            password=TEST_PASSWORD,
             privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
             stated_fit_preference=StatedFitPreference.SLIM,
         )
@@ -227,18 +258,46 @@ def test_signup_request_round_trip() -> None:
 
 def test_signup_request_rejects_short_password() -> None:
     # PRD §11: passwords ≥ 10 characters. Schema-level enforcement.
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         SignupRequest(
             email="alice@example.com",
-            password="short",
+            password="Sh0rt!",
             privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
         )
 
 
+def test_signup_request_rejects_single_class_password() -> None:
+    # TKT-P1-07: long is not enough on its own; the password must mix
+    # character classes.
+    with pytest.raises(ValidationError):
+        SignupRequest(
+            email="alice@example.com",
+            password="correcthorsebatterystaple",
+            privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
+        )
+
+
+def test_signup_request_normalizes_naive_consent_timestamp_to_utc() -> None:
+    # The column is TIMESTAMPTZ; a client that omits the offset gets read
+    # as UTC rather than losing its consent record to a 422.
+    request = SignupRequest(
+        email="alice@example.com",
+        password=TEST_PASSWORD,
+        privacy_consent_accepted_at=datetime(2026, 5, 26, 12, 0),  # noqa: DTZ001
+    )
+
+    assert request.privacy_consent_accepted_at == datetime(2026, 5, 26, 12, 0, tzinfo=UTC)
+
+
+def test_login_request_accepts_a_password_that_would_fail_signup_policy() -> None:
+    # Login must not enforce the new-password policy: a stale or simply
+    # wrong password belongs in a 401 from the credential check, not a 422
+    # from the schema (see api/schemas/auth.py).
+    assert LoginRequest(email="alice@example.com", password="x").password == "x"
+
+
 def test_login_request_round_trip() -> None:
-    round_trip(LoginRequest(email="alice@example.com", password="hunter2hunter"))
+    round_trip(LoginRequest(email="alice@example.com", password=TEST_PASSWORD))
 
 
 def test_refresh_request_round_trip() -> None:
@@ -311,8 +370,10 @@ def test_user_export_round_trip() -> None:
             id=uuid4(),
             email="alice@example.com",
             created_at=datetime(2026, 5, 26, tzinfo=UTC),
+            privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
             preferred_units=PreferredUnits.CM,
             stated_fit_preference=StatedFitPreference.REGULAR,
+            device_push_token="apns-token-abc123",
         )
     )
 
@@ -340,10 +401,12 @@ def test_export_response_round_trip() -> None:
         id=uuid4(),
         email="alice@example.com",
         created_at=datetime(2026, 5, 26, tzinfo=UTC),
+        privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
         preferred_units=PreferredUnits.CM,
         stated_fit_preference=None,
+        device_push_token=None,
     )
-    garment = OwnedGarmentResponse(
+    garment = OwnedGarmentExport(
         id=uuid4(),
         user_id=user.id,
         category_id="mens_button_down_shirt",
@@ -352,6 +415,7 @@ def test_export_response_round_trip() -> None:
         size_label="M",
         measurements=_measurements(),
         created_at=datetime(2026, 5, 26, tzinfo=UTC),
+        deleted_at=None,
     )
     signal = FitSignalResponse(
         id=uuid4(),
@@ -387,3 +451,91 @@ def test_export_response_round_trip() -> None:
             recommendations=[recommendation],
         )
     )
+
+
+@pytest.mark.parametrize(
+    ("model", "valid", "unknown_field"),
+    [
+        (
+            SignupRequest,
+            {
+                "email": "alice@example.com",
+                "password": "Sizeify-Pass-1",
+                "privacy_consent_accepted_at": "2026-09-17T00:00:00Z",
+            },
+            "stated_fit_pref",  # typo of stated_fit_preference
+        ),
+        (
+            LoginRequest,
+            {"email": "alice@example.com", "password": "Sizeify-Pass-1"},
+            "scope",
+        ),
+        (RefreshRequest, {"refresh_token": "a.b.c"}, "user_id"),
+    ],
+)
+def test_auth_request_bodies_reject_unknown_fields(
+    model: type[BaseModel], valid: dict[str, Any], unknown_field: str
+) -> None:
+    """Auth bodies forbid extras, like every other request body.
+
+    The closet and ``/me`` bodies all set ``extra="forbid"``; these three did
+    not, so an unknown key was a 422 on every closet verb and silently dropped
+    on every auth verb. Concretely, ``POST /auth/signup`` with a mistyped
+    ``stated_fit_pref`` returned 202 and discarded the user's onboarding
+    answer — the exact failure the closet bodies added the guard to prevent.
+    """
+    assert model.model_validate(valid) is not None
+
+    with pytest.raises(ValidationError) as exc:
+        model.model_validate({**valid, unknown_field: "x"})
+
+    assert any(unknown_field in str(error["loc"]) for error in exc.value.errors())
+
+
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        ("/closet/garments", "get"),
+        ("/closet/garments", "post"),
+        ("/closet/garments/{garment_id}", "patch"),
+        ("/closet/garments/{garment_id}", "delete"),
+        ("/closet/garments/{garment_id}/fit-signals", "post"),
+        ("/closet/fit-profile", "get"),
+        ("/me/export", "get"),
+        ("/me", "delete"),
+    ],
+)
+def test_rate_limited_routes_declare_429(path: str, method: str) -> None:
+    """Every path behind a ``RateLimitMiddleware`` prefix must publish its 429.
+
+    The limiter is middleware, so FastAPI cannot infer the response — it has
+    to be declared. Only the three ``/auth/*`` paths were, even though a
+    second limiter covers ``/closet/*`` and ``/me``, so a client generated
+    from this spec had no Retry-After handling on the closet write path.
+    """
+    spec = create_app().openapi()
+
+    assert "429" in spec["paths"][path][method]["responses"]
+
+
+def test_error_responses_publish_a_body_schema() -> None:
+    """A declared status that returns a body must say so.
+
+    ``_NOT_FOUND_RESPONSE`` carried a description but no ``model``, so the 404
+    published no schema while 401 and 429 both published ``ErrorDetail`` — a
+    typed client got ``void`` for that branch and could not read the ``detail``
+    the handler actually sends.
+    """
+    spec = create_app().openapi()
+    patch_responses = spec["paths"]["/closet/garments/{garment_id}"]["patch"]["responses"]
+
+    for code in ("401", "404", "429"):
+        assert "content" in patch_responses[code], f"{code} publishes no body schema"
+
+
+def test_the_closet_ceiling_is_discoverable() -> None:
+    """``POST /closet/garments`` raises 409 when the closet is full; a client
+    that cannot see it in the spec has no branch for it."""
+    spec = create_app().openapi()
+
+    assert "409" in spec["paths"]["/closet/garments"]["post"]["responses"]

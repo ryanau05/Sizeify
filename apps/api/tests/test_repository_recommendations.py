@@ -7,6 +7,7 @@ outcome from the schema.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -98,3 +99,40 @@ async def test_delete_removes_row(db_session: AsyncSession) -> None:
 async def test_delete_missing_returns_false(db_session: AsyncSession) -> None:
     repo = RecommendationRepository(db_session)
     assert await repo.delete(uuid4()) is False
+
+
+async def test_list_for_user_is_scoped_and_ordered(db_session: AsyncSession) -> None:
+    """Written out of order with explicit timestamps: Postgres ``now()`` is
+    transaction-start time, so rows created inside one test transaction all
+    share a ``created_at`` and could not show real ordering.
+    """
+    alice = await make_user(db_session)
+    bob = await make_user(db_session)
+    product = await make_brand_product(db_session)
+    for size, day in (("L", 3), ("S", 1), ("M", 2)):
+        await make_recommendation(
+            db_session,
+            user=alice,
+            brand_product=product,
+            recommended_size=size,
+            created_at=datetime(2026, 1, day, tzinfo=UTC),
+        )
+    await make_recommendation(db_session, user=bob, brand_product=product)
+
+    rows = await RecommendationRepository(db_session).list_for_user(alice.id)
+
+    assert [row.recommended_size for row in rows] == ["S", "M", "L"]
+    assert all(row.user_id == alice.id for row in rows)
+
+
+async def test_list_for_user_honours_a_limit(db_session: AsyncSession) -> None:
+    """Unbounded by default for the GDPR export; the Phase 6 recent-activity
+    view is the caller that will page."""
+    user = await make_user(db_session)
+    product = await make_brand_product(db_session)
+    for _ in range(4):
+        await make_recommendation(db_session, user=user, brand_product=product)
+
+    rows = await RecommendationRepository(db_session).list_for_user(user.id, limit=2)
+
+    assert len(rows) == 2

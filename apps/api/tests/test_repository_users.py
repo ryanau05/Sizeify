@@ -7,18 +7,35 @@ contract.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
-from _factories import make_user
+import pytest
+from _factories import TEST_PASSWORD_HASH, make_user
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.repositories.users import UserRepository
+
+# ``password_hash`` and ``privacy_consent_accepted_at`` are NOT NULL
+# (migration 0003), so every direct ``create`` has to supply them. Kept as
+# one helper so a future required column is a single edit here.
+CONSENT_AT = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def user_fields(**overrides: Any) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "password_hash": TEST_PASSWORD_HASH,
+        "privacy_consent_accepted_at": CONSENT_AT,
+    }
+    fields.update(overrides)
+    return fields
 
 
 async def test_create_and_get(db_session: AsyncSession) -> None:
     repo = UserRepository(db_session)
 
-    user = await repo.create(email="alice@example.com")
+    user = await repo.create(**user_fields(email="alice@example.com"))
     assert user.id is not None  # Python-side default fires before flush
 
     fetched = await repo.get(user.id)
@@ -48,7 +65,7 @@ async def test_list_returns_inserted_rows(db_session: AsyncSession) -> None:
 
 async def test_update_patches_fields(db_session: AsyncSession) -> None:
     repo = UserRepository(db_session)
-    user = await repo.create(email="bob@example.com")
+    user = await repo.create(**user_fields(email="bob@example.com"))
 
     updated = await repo.update(user.id, stated_fit_preference="slim", preferred_units="in")
     assert updated is not None
@@ -65,7 +82,7 @@ async def test_update_missing_returns_none(db_session: AsyncSession) -> None:
 
 async def test_delete_removes_row(db_session: AsyncSession) -> None:
     repo = UserRepository(db_session)
-    user = await repo.create(email="bye@example.com")
+    user = await repo.create(**user_fields(email="bye@example.com"))
 
     assert await repo.delete(user.id) is True
     assert await repo.get(user.id) is None
@@ -74,3 +91,76 @@ async def test_delete_removes_row(db_session: AsyncSession) -> None:
 async def test_delete_missing_returns_false(db_session: AsyncSession) -> None:
     repo = UserRepository(db_session)
     assert await repo.delete(uuid4()) is False
+
+
+async def test_get_by_email_finds_the_row(db_session: AsyncSession) -> None:
+    repo = UserRepository(db_session)
+    user = await repo.create(**user_fields(email="carol@example.com"))
+
+    found = await repo.get_by_email("carol@example.com")
+    assert found is not None
+    assert found.id == user.id
+
+
+async def test_get_by_email_is_case_insensitive(db_session: AsyncSession) -> None:
+    repo = UserRepository(db_session)
+    user = await repo.create(**user_fields(email="Carol@Example.com"))
+
+    found = await repo.get_by_email("carol@example.com")
+    assert found is not None
+    assert found.id == user.id
+
+
+async def test_get_by_email_does_not_treat_underscore_as_a_wildcard(
+    db_session: AsyncSession,
+) -> None:
+    """``_`` is legal in an email local part and an ``ILIKE`` wildcard —
+    matching must be exact-after-lowercasing, not pattern-based."""
+    repo = UserRepository(db_session)
+    await repo.create(**user_fields(email="carol_b@example.com"))
+
+    assert await repo.get_by_email("carolXb@example.com") is None
+
+
+async def test_get_by_email_missing_returns_none(db_session: AsyncSession) -> None:
+    repo = UserRepository(db_session)
+    assert await repo.get_by_email("nobody@example.com") is None
+
+
+async def test_case_variant_emails_cannot_both_exist(db_session: AsyncSession) -> None:
+    """Migration 0005. ``get_by_email`` matches on ``lower(email)`` while the
+    plain UNIQUE is exact-match, so without the functional index two rows
+    could coexist and login became a coin flip between them."""
+    import sqlalchemy.exc
+
+    repo = UserRepository(db_session)
+    await repo.create(**user_fields(email="dupe@example.com"))
+
+    with pytest.raises(sqlalchemy.exc.IntegrityError):
+        await repo.create(**user_fields(email="DUPE@example.com"))
+
+
+def test_user_email_lower_index_matches_migration_0005() -> None:
+    """The ORM index must render the same DDL migration 0005 creates.
+
+    ``sa.func.lower("email")`` passes a Python *string*, so the model rendered
+    ``lower('email')`` — a constant expression, not the column. Postgres
+    accepts it and it makes the whole table single-row: the second insert
+    fails with ``Key (lower('email'::text))=(email) already exists``.
+
+    Nothing builds schema from metadata today, so the drift was latent, and
+    ``alembic check`` cannot catch it either — expression indexes are skipped
+    during reflection. That is exactly why it needs a test: the model's stated
+    constraint was a lie that any future metadata-driven path would have
+    materialised as a one-user-maximum database.
+    """
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    from api.models.user import User
+
+    index = next(i for i in User.__table__.indexes if i.name == "uq_user_email_lower")
+    ddl = str(CreateIndex(index).compile(dialect=postgresql.dialect()))
+
+    assert "lower(email)" in ddl, ddl
+    assert "lower('email')" not in ddl, f"index is on a constant, not the column: {ddl}"

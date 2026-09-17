@@ -79,6 +79,8 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked
 
+      # Also enforces the route-layer import boundary: src/api/routes/ruff.toml
+      # bans AsyncSession and friends there (TKT-P1-20, CLAUDE.md backend rules).
       - name: Ruff lint
         run: uv run ruff check
 
@@ -95,8 +97,14 @@ jobs:
       - name: Apply migrations
         run: uv run alembic upgrade head
 
-      - name: Pytest
-        run: uv run pytest
+      # --cov is scoped to api.domain on purpose: the pure cores (fit profile,
+      # matching, stretch, recommendation, measurements) are where a coverage
+      # floor is meaningful, since they are deterministic functions with no I/O
+      # to excuse a gap. Route and repository coverage is reported by the
+      # developer-facing command in apps/api/README.md but not gated, so a
+      # thin-but-correct handler does not fail the build.
+      - name: Pytest + api.domain coverage gate
+        run: uv run pytest --cov=api.domain --cov-report=term-missing --cov-fail-under=90
 
   # Always-running aggregate. This is the required status check on main: it
   # passes when the backend is unchanged (test skipped) and fails if the test

@@ -2,13 +2,23 @@
 
 When the engine compares a candidate garment's size chart against the user's
 fit profile, stretchy fabrics must be made to "fit bigger" than their flat
-measurement: a 107 cm chest in a high-stretch knit wears like a larger
+measurement: a 54 cm chest in a high-stretch knit wears like a larger
 non-stretch shirt. We model this as a small additive offset (in cm) applied to
 the garment's measured value, keyed on the coarse 4-level ``StretchLevel``.
 
 The coefficients below are **hand-tuned for v1** from public clothing-engineering
 references, anchored on the PRD §6.3 example ("effective chest = measured chest
 + 2 cm for moderate stretch"). They are deliberately coarse.
+
+Additive, not multiplicative
+----------------------------
+PRD §6.3 specifies the adjustment as an addition in centimetres, and the model
+here follows it literally. This is worth stating because "coefficient" invites
+a multiplier reading, and the two disagree in exactly the place it matters:
+a percentage stretches a 72 cm body length as much as a 54 cm chest, when in
+practice a knit gives roughly the same absolute room whatever the panel's size.
+Switching to a multiplier is a recalibration of the whole engine, not a
+refactor — treat it the same way as the learning-loop note below.
 
 IMPORTANT (CLAUDE.md gotcha / PRD §6.3): these are hand-tuned constants. Do NOT
 add a learning loop that fits them from user-feedback data without explicit
@@ -54,9 +64,21 @@ def stretch_offset_cm(stretch_level: StretchLevel | None) -> float:
     if stretch_level is None:
         return 0.0
     try:
-        return STRETCH_OFFSETS_CM[StretchLevel(stretch_level)]
+        level = StretchLevel(stretch_level)
     except ValueError as exc:  # StretchLevel(...) rejected the value
         raise UnknownStretchLevelError(f"unknown stretch level: {stretch_level!r}") from exc
+
+    try:
+        return STRETCH_OFFSETS_CM[level]
+    except KeyError as exc:
+        # A level that is a valid enum member but has no tuned offset. That is
+        # a gap in this module, not bad input — but it would otherwise surface
+        # on the recommendation path as a bare KeyError, breaking the typed
+        # contract the matching engine relies on. ``tests/test_stretch.py``
+        # asserts the table stays exhaustive so this stays unreachable.
+        raise UnknownStretchLevelError(
+            f"stretch level {level.value!r} has no tuned offset in STRETCH_OFFSETS_CM"
+        ) from exc
 
 
 def effective_measurement(measurement_cm: float, stretch_level: StretchLevel | None) -> float:

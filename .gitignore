@@ -10,6 +10,12 @@ __pycache__/
 .venv/
 .env
 .pytest_cache/
+
+# Coverage artifacts (TKT-P1-20 runs coverage in CI and locally)
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 .mypy_cache/
 .ruff_cache/
 

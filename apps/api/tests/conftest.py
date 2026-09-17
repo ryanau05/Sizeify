@@ -20,7 +20,7 @@ already required for migrations and ``uv run`` workflows, and the per-test
 rollback means tests don't leave residue.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
@@ -28,9 +28,25 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.config import get_settings
 from api.deps import get_session
 from api.main import create_app
 from api.repositories.base import get_engine
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings_cache() -> Iterator[None]:
+    """Drop the ``get_settings`` cache around every test.
+
+    ``get_settings`` is ``lru_cache``d so the dotenv file is not re-read on
+    every JWT operation. Tests monkeypatch ``JWT_SECRET`` and the rate-limit
+    knobs, so a value cached by an earlier test would leak into a later one.
+    Cleared on both sides: before, so this test sees its own environment;
+    after, so it does not hand its environment to the next one.
+    """
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture

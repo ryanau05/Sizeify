@@ -185,14 +185,23 @@ def decode(token: str) -> Claims:
     except ValueError as exc:
         raise InvalidTokenError(f"unknown token type {payload['typ']!r}") from exc
 
-    return Claims(
-        user_id=UUID(payload["sub"]),
-        token_type=token_type,
-        issued_at=datetime.fromtimestamp(payload["iat"], tz=UTC),
-        expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
-        jti=payload["jti"],
-        key_id=str(header.get("kid", "")),
-    )
+    # Claim *presence* is enforced by pyjwt's ``require`` above; claim *shape*
+    # is not. A correctly-signed token whose ``sub`` is not a UUID, or whose
+    # ``iat``/``exp`` is outside the platform's datetime range, would otherwise
+    # leave here as ValueError/OverflowError/OSError — contradicting the
+    # docstring's promise that anything other than expiry is an
+    # ``InvalidTokenError``, and escaping callers that catch only ``JwtError``.
+    try:
+        return Claims(
+            user_id=UUID(payload["sub"]),
+            token_type=token_type,
+            issued_at=datetime.fromtimestamp(payload["iat"], tz=UTC),
+            expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
+            jti=payload["jti"],
+            key_id=str(header.get("kid", "")),
+        )
+    except (ValueError, OverflowError, OSError, TypeError) as exc:
+        raise InvalidTokenError(f"malformed claim: {exc}") from exc
 
 
 async def issue_pair(user_id: UUID, repo: RefreshTokenRepository) -> tuple[str, str]:
@@ -245,5 +254,13 @@ async def rotate(refresh_token: str, repo: RefreshTokenRepository) -> tuple[str,
         await repo.revoke_all_for_user(row.user_id)
         raise ReusedRefreshTokenError(row.user_id)
 
-    await repo.mark_revoked(row.id)
+    if not await repo.mark_revoked(row.id):
+        # Lost the compare-and-swap: a concurrent request revoked this same
+        # row between our SELECT and our UPDATE. That is the replay signal
+        # arriving as a race rather than as a second request, and it gets
+        # the identical response — otherwise an attacker who races the
+        # legitimate client walks away with a working parallel chain.
+        await repo.revoke_all_for_user(row.user_id)
+        raise ReusedRefreshTokenError(row.user_id)
+
     return await issue_pair(row.user_id, repo)

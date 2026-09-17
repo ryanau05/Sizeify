@@ -9,6 +9,20 @@ A size whose every dimension lands within the profile's ``spread`` (its
 preferred range) scores a distance of 0 — "sizes within range on all
 dimensions score highest" (PRD §6.4). Among such ties, the residual weighted
 absolute gap breaks the tie so the most centred size still wins.
+
+Nothing to rank on
+------------------
+A profile with no scored dimensions — an empty closet, or a closet whose
+dimensions do not overlap the weights table — has no evidence to score any
+size against. (Not the same as cold start, which is simply fewer than three
+garments: a one-garment closet is cold start and still has dimensions.)
+
+Every size then ties at distance 0, and ``within_range`` is reported as
+``False`` rather than vacuously ``True``: "every dimension is inside the
+preferred range" must not be satisfiable by having no dimensions.
+The caller decides what to do about it — ``domain.recommendation`` clamps
+confidence for a cold-start profile, and PRD §13 asks the app to say "add a
+few shirts to your closet first" instead of showing a size at all.
 """
 
 from __future__ import annotations
@@ -52,7 +66,10 @@ class RankedSize:
 
     size_label: str
     distance: float  # weighted out-of-range distance (0 = ideal)
-    within_range: bool  # every weighted dimension inside spread
+    # True only when at least one dimension was scored AND every scored
+    # dimension landed inside the profile's spread. False for a profile with
+    # nothing to score — see "Nothing to rank on" in the module docstring.
+    within_range: bool
     per_dimension_deltas: Mapping[str, float]  # signed (candidate_effective − preferred), cm
     residual: float  # weighted |delta| tiebreaker
 
@@ -62,28 +79,43 @@ def _weights_for(fit_profile: FitProfile) -> Mapping[str, float]:
     return BUTTON_DOWN_DIMENSION_WEIGHTS
 
 
-def match(fit_profile: FitProfile, brand_product: BrandProduct) -> list[RankedSize]:
+def match(
+    fit_profile: FitProfile,
+    brand_product: BrandProduct,
+    *,
+    use_case: str | None = None,
+) -> list[RankedSize]:
     """Rank every size in ``brand_product``, best (smallest distance) first.
 
     Only dimensions present in BOTH the profile and the weights table are
     scored. If such a dimension is missing from a size's chart, raises
     ``MissingDimensionError``.
+
+    ``use_case`` selects a per-use-case variant of the profile (PRD §6.4: "If
+    the user's recent activity or the source URL provides hints about intended
+    use case … the recommendation conditions on that use case"). A use case
+    with no variant falls back to the unconditioned profile — see
+    ``FitProfile.dimensions_for``.
     """
     weights = _weights_for(fit_profile)
-    scored_dims = [d for d in fit_profile.dimensions if d in weights]
+    dimensions = fit_profile.dimensions_for(use_case)
+    scored_dims = [d for d in dimensions if d in weights]
 
-    ranked: list[RankedSize] = []
+    # (sort key, size) pairs: the ordinal is a tiebreak, not part of the
+    # result, so it does not belong on ``RankedSize``.
+    scored: list[tuple[tuple[float, float, float, str], RankedSize]] = []
     for size_label, chart in brand_product.size_chart.items():
         distance = 0.0
         residual = 0.0
-        within = True
+        # Vacuously-true would claim a fit we have no evidence for.
+        within = bool(scored_dims)
         deltas: dict[str, float] = {}
         for dim in scored_dims:
             if dim not in chart:
                 raise MissingDimensionError(
                     f"{brand_product.brand} size {size_label!r} chart is missing dimension {dim!r}"
                 )
-            stat = fit_profile.dimensions[dim]
+            stat = dimensions[dim]
             candidate = effective_measurement(chart[dim], brand_product.stretch_level)
             delta = candidate - stat.preferred_cm
             deltas[dim] = round(delta, 2)
@@ -93,15 +125,30 @@ def match(fit_profile: FitProfile, brand_product: BrandProduct) -> list[RankedSi
                 within = False
             distance += w * out_of_range
             residual += w * abs(delta)
-        ranked.append(
-            RankedSize(
-                size_label=size_label,
-                distance=round(distance, 4),
-                within_range=within,
-                per_dimension_deltas=deltas,
-                residual=round(residual, 4),
-            )
+        size = RankedSize(
+            size_label=size_label,
+            distance=round(distance, 4),
+            within_range=within,
+            per_dimension_deltas=deltas,
+            residual=round(residual, 4),
         )
+        # Sum of the size's own scored measurements: a stable stand-in for
+        # "how big is this garment", used only to break exact ties.
+        ordinal = sum(chart[dim] for dim in scored_dims)
+        scored.append(((size.distance, size.residual, ordinal, size_label), size))
 
-    ranked.sort(key=lambda r: (r.distance, r.residual))
-    return ranked
+    # Ties used to fall out of ``size_chart`` dict iteration order. Once charts
+    # load from the ``brand_product`` JSONB column that is whatever Postgres
+    # chose (jsonb sorts keys by length then bytewise and does not preserve
+    # input order), so the recommended size could change between a fresh scrape
+    # and a round-tripped one. Rounding distance and residual to 4 places makes
+    # exact ties likelier than raw floats would, which makes this matter more.
+    #
+    # When two sizes tie on both metrics the model genuinely has no preference,
+    # so the tiebreak only has to be reproducible. It breaks on the smaller
+    # garment first, which at least reads as a rule; the label is a final
+    # fallback for two sizes with identical measurements under different names.
+    # Sorting on the label alone would have been reproducible but nonsense —
+    # "L" sorts before "M" before "S".
+    scored.sort(key=lambda pair: pair[0])
+    return [size for _, size in scored]

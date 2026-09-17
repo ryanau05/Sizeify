@@ -9,9 +9,10 @@ single source of truth for two consumers:
 * The matching engine (TKT-P1-14), which multiplies per-dimension
   distances by the corresponding weight and sums.
 
-Adding or renaming a dimension requires updating **all four** of:
+Adding or renaming a dimension requires updating **all five** of:
 ``garment_category.measurement_schema`` (the seed), this module, the NLP
-extraction prompt, and the matching engine — see CLAUDE.md "Workflow rules".
+extraction prompt, the matching engine, and ``_DIM_LABEL`` in
+``domain/recommendation.py`` — see CLAUDE.md "Workflow rules".
 
 Weights MUST sum to 1.0 (validated by unit test) so the weighted distance
 stays in a comparable range across categories.

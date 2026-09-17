@@ -73,7 +73,7 @@ Indexes from PRD §8.2 go in the same migration. They are not optional; the shar
 
 Effort is given in solo-developer-weeks. Treat the numbers as relative sequencing aids, not deadlines. Many phases run in parallel; explicit dependencies are called out.
 
-### Phase 0 — Foundation (week 1)
+### Phase 0 — Foundation (week 1) — ✅ COMPLETE
 
 Goal: a runnable monorepo with the four-component skeleton, lint/format/test wired, CI green on an empty repo.
 
@@ -88,11 +88,98 @@ Deliverables:
 
 Exit criterion: a fresh clone + `make bootstrap` (or equivalent) gets a contributor to "all green" in under ten minutes.
 
-### Phase 1 — Backend core: schema, auth, closet CRUD (weeks 2–3)
+### Phase 1 — Backend core: schema, auth, closet CRUD (weeks 2–3) — ✅ COMPLETE (2026-09-10)
 
 Goal: a backend that can store a user's closet and run the matching engine in isolation.
 
-> **Domain core already landed:** TKT-P1-11/12/14/15 (`stretch`, `fit_profile`, `matching`, `recommendation`) were built ahead of schedule on the now-deleted capstone demo branch (archived as the tag `archive/demo-capstone`) and cherry-picked onto `main` with their unit tests. Treat them as done and build the closet/recommendation endpoints on top rather than rebuilding. The demo's throwaway pieces (the `DEMO_MODE` ASGI app and web client) were discarded with the branch.
+> **Status:** all 20 tickets in `PHASE_1_TICKETS.md` are delivered, and the exit
+> criterion passes as `apps/api/tests/integration/test_phase1_exit.py`. 522 tests,
+> 99% coverage on `api.domain`, ruff/mypy/alembic clean. Migrations `0001`–`0006`.
+>
+> Two further reviews ran before the PR — a specialist pass and an
+> adversarial pass — finding thirteen defects between them that the first
+> review missed. All are fixed on the branch, each with a regression test
+> confirmed to fail against the pre-fix code. The ones worth knowing about:
+>
+> - **Migration `0003` could not apply to a fresh database.** The consent
+>   backfill bound an ISO *string* against a `timestamptz` column, so
+>   `alembic upgrade head` aborted anywhere the schema was not already
+>   present. Every test runs against a database already at head, so the
+>   suite stayed green while the deploy path was broken.
+> - **The authenticated rate limiter could be bypassed by anyone.** It
+>   bucketed on a hash of the *unverified* bearer token, so rotating the
+>   token minted a fresh full bucket per request: 0/50 requests throttled,
+>   no account needed. It now keys on the verified `sub`.
+> - **Reference garments were ranked against the unconditioned profile**
+>   while the deltas came from the use-case variant, so a conditioned
+>   recommendation cited the wrong shirt (PRD §5.4).
+> - `fit_signal.owned_garment_id` had no index, on the 100 ms fit-profile
+>   path (migration `0006`).
+> - The ORM's `lower(email)` index was built on a string literal, not the
+>   column, so the model and migration `0005` disagreed.
+> - Auth request bodies accepted unknown fields while every other body
+>   forbade them, silently discarding a mistyped `stated_fit_preference`.
+> - **The migration test could have dropped the real database.** It derived
+>   its throwaway name with `rpartition("/")`, so for any `DATABASE_URL`
+>   carrying a query string — `?sslmode=require`, the norm on managed
+>   Postgres — the suffix landed in the query string and the URL still
+>   resolved to the real database, where the cycle test ran `downgrade base`
+>   with the destructive opt-in set and asserted green. Introduced by the
+>   fix for the `0003` bug above; caught by the adversarial pass.
+> - **Rate-limiter eviction was a rate-limit reset.** A bucket's content is
+>   spent budget, so evicting one restored that key to full capacity, and a
+>   throttled client could trigger its own eviction by minting keys. New
+>   keys past the cap now share an overflow bucket; nothing live is dropped.
+> - An unset `JWT_SECRET` 500'd every authenticated request, from inside
+>   pre-routing middleware where no exception handler could reach it.
+> - Signup treated *every* `IntegrityError` as "address taken", so any
+>   future constraint violation would have returned 202 having created
+>   nothing — indistinguishable, by design, from a taken address.
+> - Argon2 ran unbounded across anyio's 40-thread pool at 128 MiB each:
+>   5 GiB resident, reachable by one account through `DELETE /me`.
+> - Fit-signal creation was uncapped while `use_case` is free text, making
+>   `GET /closet/fit-profile` an event-loop stall an authenticated caller
+>   controls.
+>
+> The domain core (TKT-P1-11/12/14/15: `stretch`, `fit_profile`, `matching`,
+> `recommendation`) was originally built on the retired capstone demo branch
+> (archived as `archive/demo-capstone`) and cherry-picked onto `main`. Phase 1
+> completed it: the weak prior and use-case conditioning that TKT-P1-12 asks for
+> were missing, and `matching`/`recommendation` each carried a correctness bug the
+> ticket work surfaced.
+>
+> **Pre-landing review (2026-09-10).** A four-specialist review of the phase found
+> 42 issues; 10 were fixed before landing. In severity order: `PATCH
+> {"measurements": null}` permanently bricked an account (SQLAlchemy maps Python
+> `None` onto JSON null, so the NOT NULL constraint never fired and every later
+> read raised); Argon2 ran inline on the event loop; legacy measurement rows were
+> silently skipped rather than failing; refresh rotation was not a compare-and-swap,
+> so a stolen token could be raced into a second valid chain; email uniqueness was
+> case-sensitive in the database but case-insensitive in the lookup; the closet
+> list silently truncated at 100 while the export did not; an all-disliked closet
+> produced a recommendation missing a mandatory PRD §5.4 component; and the rate
+> limiter's key space was attacker-controlled. Migration `0005` and 16 regression
+> tests came out of it.
+>
+> The remaining 18 findings were carried in `TODOS.md` and **all 18 are now
+> closed** (17 on 2026-09-11, the last on 2026-09-17).
+>
+> The last one changed an API contract worth knowing about before the mobile
+> clients are built: **`POST /auth/signup` returns 202 and no tokens**, and
+> the same body whether or not the address was already registered. It used to
+> answer 409 for a taken address, which told any prober who has an account
+> here — undercutting the timing-equalized 401 that login goes to some trouble
+> to produce. Returning a token pair and being non-enumerable are mutually
+> exclusive, since a pair can only exist for an account just created. The
+> client therefore calls `POST /auth/login` immediately after signup; for a
+> genuinely new account that always succeeds, so onboarding is one tap with
+> one extra round trip.
+>
+> **Convention settled during the review:** chest is pit-to-pit **un-doubled**
+> (~54 cm). PRD §5.1's "pit-to-pit doubled" and PRD §5.2's 35–80 cm range
+> contradict each other; the range carries the number and the validator enforces
+> it, so it wins. The seed's guide text used to say "doubled" and would have had
+> users entering values their own confirmation prompt rejects.
 
 Deliverables:
 - Alembic migration creating all six entities from PRD §8 plus `recommendation.prompt_version`. Indexes from §8.2.
@@ -100,7 +187,7 @@ Deliverables:
 - Pydantic models for every request and response body. Reject raw dicts in route handlers in code review.
 - Auth: email + password via Argon2; JWT issuance with rotation. Sign-in-with-Apple and Google deferred to Phase 4 polish.
 - Endpoints:
-  - `POST /auth/signup`, `POST /auth/login`, `POST /auth/refresh`
+  - `POST /auth/signup` (202, no tokens — non-enumerable; client follows with login), `POST /auth/login`, `POST /auth/refresh`
   - `GET/POST/PATCH/DELETE /closet/garments`
   - `POST /closet/garments/{id}/fit-signals` (manual entry path for v1)
   - `GET /closet/fit-profile` (returns the constructed fit profile for the user)
@@ -108,7 +195,7 @@ Deliverables:
 - Matching engine (PRD §6.4) implemented as a pure function over (fit profile, brand_product). Stretch adjustment (PRD §6.3) using v1's hand-tuned coefficients in `apps/api/src/api/domain/stretch.py`. Unit tests covering: in-range fit, weighted distance ranking, confidence < 60% returning two candidates per PRD §5.4, gap-to-second-best driving confidence.
 - GDPR/CCPA endpoints from day one (PRD §11): `GET /me/export` (full data dump as JSON), `DELETE /me` (cascade delete), consent flag on signup.
 
-Exit criterion: integration test seeds a closet with five garments, calls the matching engine with a fixture `brand_product`, asserts the recommendation matches a hand-computed expectation including all four mandatory components.
+Exit criterion: integration test seeds a closet with five garments, calls the matching engine with a fixture `brand_product`, asserts the recommendation matches a hand-computed expectation including all four mandatory components. **Met** by `apps/api/tests/integration/test_phase1_exit.py`: five garments (two preferred-fit, one slightly-tight chest, one slightly-loose body, one gym-tagged) produce size M at 0.78 confidence with six fit notes and two cited reference garments, all hand-derived in the file's `HAND-COMPUTED EXPECTATION` block. Mutating any of the four weighting constants fails it with a traceable number.
 
 ### Phase 2 — Scrapers: interface, ten modules, fixtures (weeks 3–4, parallelizable with Phase 1)
 

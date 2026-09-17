@@ -8,6 +8,17 @@ trade-off string (PRD §5.4); a cold-start profile clamps confidence to ≤ 0.50
 
 The output shape is the API contract for the recommendation response; the
 Pydantic response model in the route layer mirrors it field for field.
+
+Refusing rather than guessing
+----------------------------
+PRD §5.4 makes all four components mandatory, so a profile with nothing to
+score cannot produce a valid recommendation: there are no per-dimension deltas
+to narrate, and every size ties at distance 0 so the "best" one would be
+whichever the scraper happened to list first. ``recommend`` raises
+``InsufficientClosetDataError`` in that case instead, which is the branch PRD
+§13 describes — "Add a few shirts to your closet first to get
+recommendations." A low-confidence answer is useful; an arbitrary one dressed
+up as a recommendation is not.
 """
 
 from __future__ import annotations
@@ -15,11 +26,23 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from uuid import UUID
 
-from api.domain.fit_profile import FitProfile
+from api.domain.fit_profile import DimensionStat, FitProfile
 from api.domain.fit_profile import ReferenceGarment as _RefGarment
 from api.domain.matching import BrandProduct, RankedSize, match
 from api.schemas.enums import OverallRating, ProfileMaturity
+
+
+class InsufficientClosetDataError(ValueError):
+    """The fit profile has no scored dimension to rank sizes against.
+
+    Raised instead of returning a recommendation whose fit notes would be
+    empty (PRD §5.4 requires them) and whose size would be an artifact of size
+    chart ordering. The caller maps this to PRD §13's "add a few shirts first"
+    notification rather than to an error the user sees as a failure.
+    """
+
 
 # Confidence < this → show two candidates with a trade-off (PRD §5.4).
 CONFIDENCE_TWO_CANDIDATE_THRESHOLD = 0.60
@@ -60,6 +83,10 @@ class ReferenceGarmentOut:
     brand: str
     size_label: str
     why: str
+    # ``owned_garment.id`` when the profile was built from database rows.
+    # ``recommendation.reference_garment_ids`` is populated from these
+    # (TKT-P1-16); ``None`` for a hand-built profile in a unit test.
+    garment_id: UUID | None = None
 
     def to_wire(self) -> dict[str, str]:
         return {
@@ -94,6 +121,10 @@ class Recommendation:
     confidence: float
     reference_garments: Sequence[ReferenceGarmentOut] = field(default_factory=tuple)
     alternate: SizeCandidate | None = None
+    #: The use case this recommendation conditioned on, or ``None`` for the
+    #: unconditioned profile. PRD §6.4 requires it to be stated rather than
+    #: silently assumed, and ``recommendation.use_case_assumed`` persists it.
+    use_case_assumed: str | None = None
 
     def to_wire(self) -> dict[str, object]:
         out: dict[str, object] = {
@@ -102,6 +133,7 @@ class Recommendation:
             "primary": self.primary.to_wire(),
             "confidence": self.confidence,
             "reference_garments": [r.to_wire() for r in self.reference_garments],
+            "use_case_assumed": self.use_case_assumed,
         }
         if self.alternate is not None:
             out["alternate"] = self.alternate.to_wire()
@@ -117,22 +149,49 @@ def _fit_note(dim: str, delta: float, spread: float) -> str:
     return f"{label}: about {abs(delta):.0f} cm slimmer/shorter than you prefer."
 
 
-def _fit_notes_for(fit_profile: FitProfile, size: RankedSize) -> list[str]:
+def _fit_notes_for(dimensions: Mapping[str, DimensionStat], size: RankedSize) -> list[str]:
+    """Narrate each scored dimension against the profile the match used.
+
+    Takes the dimension map rather than the whole profile because a
+    use-case-conditioned match scores against a variant, and the notes have to
+    describe the same numbers the ranking did.
+    """
     notes: list[str] = []
     for dim, delta in size.per_dimension_deltas.items():
-        spread = fit_profile.dimensions[dim].spread_cm
-        notes.append(_fit_note(dim, delta, spread))
+        notes.append(_fit_note(dim, delta, dimensions[dim].spread_cm))
     return notes
 
 
-def _relevance(ref: _RefGarment, size: RankedSize, fit_profile: FitProfile) -> float:
-    """Lower = more similar to the recommended size (weighted abs gap on shared dims)."""
+def _relevance(
+    ref: _RefGarment, size: RankedSize, dimensions: Mapping[str, DimensionStat]
+) -> float:
+    """Lower = more similar to the recommended size. Absolute cm gap on shared
+    dimensions.
+
+    PRD §6.4 asks for the reasoning to compare "the recommended size's
+    measurements directly to the user's most relevant owned garments", so the
+    comparison is against the candidate, not against the profile's preferred
+    value. The two coincide when the size fits well and diverge when it does
+    not — and it is exactly the poor-fit case where the user needs the
+    reference garment to be the one the recommendation actually resembles.
+
+    ``per_dimension_deltas`` holds ``candidate_effective − preferred``, so the
+    candidate's own measurement is recovered by adding the delta back.
+
+    Takes the dimension map rather than the whole profile, for the same reason
+    ``_fit_notes_for`` does: a use-case-conditioned match scores against a
+    variant, so the deltas were computed against the variant's ``preferred_cm``
+    and only add back to the right number against that same map. Reading
+    ``fit_profile.dimensions`` here — as this used to — recovered a candidate
+    measurement off by ``variant.preferred_cm - dimensions.preferred_cm``
+    whenever a variant existed, which silently mis-ranked the reference
+    garments the recommendation cites (PRD §5.4).
+    """
     total = 0.0
-    for dim in fit_profile.dimensions:
+    for dim, delta in size.per_dimension_deltas.items():
         if dim in ref.measurements_cm:
-            # Compare the reference garment to the user's preferred value as a
-            # proxy for "this is the garment closest to what we're recommending".
-            total += abs(ref.measurements_cm[dim] - fit_profile.dimensions[dim].preferred_cm)
+            candidate_cm = dimensions[dim].preferred_cm + delta
+            total += abs(ref.measurements_cm[dim] - candidate_cm)
     # Slight boost for love/like garments so they surface first when relevant.
     rating_bonus = (
         _RATING_BONUS.get(ref.overall_rating, 0.0) if ref.overall_rating is not None else 0.0
@@ -141,9 +200,19 @@ def _relevance(ref: _RefGarment, size: RankedSize, fit_profile: FitProfile) -> f
 
 
 def _reference_garments_for(
-    fit_profile: FitProfile, size: RankedSize, limit: int = 2
+    fit_profile: FitProfile,
+    size: RankedSize,
+    dimensions: Mapping[str, DimensionStat],
+    limit: int = 2,
 ) -> list[ReferenceGarmentOut]:
-    refs = sorted(fit_profile.references, key=lambda r: _relevance(r, size, fit_profile))
+    # No secondary key on purpose. ``sorted`` is stable and the input order is
+    # already deterministic — ``references`` comes from the closet in
+    # ``list_for_user`` order, which is ``created_at`` then id — so equally
+    # relevant garments break toward the one the user has owned longest. That
+    # is reproducible and meaningful; sorting on the label instead would have
+    # been reproducible and arbitrary ("Lululemon" before "Uniqlo" says
+    # nothing about which shirt informed the recommendation).
+    refs = sorted(fit_profile.references, key=lambda r: _relevance(r, size, dimensions))
     out: list[ReferenceGarmentOut] = []
     for ref in refs[:limit]:
         rated = (
@@ -157,18 +226,35 @@ def _reference_garments_for(
                 brand=ref.brand,
                 size_label=ref.size_label,
                 why=f"Your {ref.brand} {ref.size_label} ({rated}) sits closest to this fit.",
+                garment_id=ref.garment_id,
             )
         )
     return out
 
 
+# Hand-tuned like BASE_SPREAD_CM and PRIOR_WEIGHT in ``fit_profile``, and
+# named for the same reason: re-tuning should have one greppable home rather
+# than three bare literals inside an expression.
+
+#: How fast confidence falls off as the best size drifts out of range. Larger
+#: punishes distance harder.
+_CLOSENESS_DECAY = 0.6
+
+#: Stand-in gap score when the chart offers only one size — there is no
+#: runner-up to measure separation against, so neither confident nor not.
+_SINGLE_SIZE_GAP_SCORE = 0.55
+
+#: Centimetres of separation at which two sizes count as clearly distinct.
+_GAP_SCALE_CM = 2.0
+
+
 def _confidence(fit_profile: FitProfile, best: RankedSize, second: RankedSize | None) -> float:
-    closeness = 1.0 / (1.0 + 0.6 * best.distance)  # 1.0 when best is fully in range
+    closeness = 1.0 / (1.0 + _CLOSENESS_DECAY * best.distance)  # 1.0 when fully in range
     if second is None:
-        gap_score = 0.55  # only one size offered — moderate, can't compare
+        gap_score = _SINGLE_SIZE_GAP_SCORE
     else:
         gap = max(0.0, second.distance - best.distance)
-        gap_score = 1.0 - math.exp(-gap / 2.0)
+        gap_score = 1.0 - math.exp(-gap / _GAP_SCALE_CM)
     certainty = _CERTAINTY_BY_MATURITY[fit_profile.maturity]
     base = _W_CLOSENESS * closeness + _W_GAP * gap_score + _W_CERTAINTY * certainty
     if fit_profile.maturity is ProfileMaturity.COLD_START:
@@ -176,25 +262,67 @@ def _confidence(fit_profile: FitProfile, best: RankedSize, second: RankedSize | 
     return round(max(0.0, min(1.0, base)), 2)
 
 
-def recommend(fit_profile: FitProfile, brand_product: BrandProduct) -> Recommendation:
-    """Produce a size recommendation with all four PRD §5.4 components."""
-    ranked = match(fit_profile, brand_product)
+def recommend(
+    fit_profile: FitProfile,
+    brand_product: BrandProduct,
+    *,
+    use_case: str | None = None,
+) -> Recommendation:
+    """Produce a size recommendation with all four PRD §5.4 components.
+
+    ``use_case`` is the caller's hint about intent — the share-sheet path
+    derives it from the product URL (PRD §6.4). With no hint, the user's most
+    common use case is assumed, and either way the result records which one
+    via ``use_case_assumed`` so the reasoning can say so out loud.
+    """
+    assumed = use_case if use_case is not None else fit_profile.default_use_case()
+    # A hint we have no variant for conditions nothing, so claiming it would
+    # mislabel an unconditioned recommendation.
+    if assumed is not None and assumed not in fit_profile.use_case_variants:
+        assumed = None
+
+    ranked = match(fit_profile, brand_product, use_case=assumed)
     if not ranked:
         raise ValueError("brand_product has no sizes to rank")
 
     best = ranked[0]
+    if not best.per_dimension_deltas:
+        # Nothing was scored — see "Refusing rather than guessing" above.
+        raise InsufficientClosetDataError(
+            "fit profile has no scored dimensions; cannot recommend a size for "
+            f"{brand_product.brand} {brand_product.product_name!r}"
+        )
+    if not fit_profile.references:
+        # PRD §5.4 makes reference garments mandatory, and the profile has
+        # none to cite. Reachable with a closet the user rated entirely
+        # "dislike": those are excluded from ``references`` (correctly —
+        # citing a shirt they hate as the reason for a size is worse than
+        # citing nothing), which leaves the recommendation two components
+        # short of the four it promises. Refuse for the same reason as
+        # above rather than ship a partial one.
+        raise InsufficientClosetDataError(
+            "fit profile has no citable reference garments (every garment is rated "
+            f"'dislike'); cannot recommend a size for {brand_product.brand} "
+            f"{brand_product.product_name!r}"
+        )
+
     second = ranked[1] if len(ranked) > 1 else None
     confidence = _confidence(fit_profile, best, second)
 
+    dimensions = fit_profile.dimensions_for(assumed)
     primary = SizeCandidate(
         size_label=best.size_label,
-        fit_notes=_fit_notes_for(fit_profile, best),
+        fit_notes=_fit_notes_for(dimensions, best),
     )
-    references = _reference_garments_for(fit_profile, best)
+    references = _reference_garments_for(fit_profile, best, dimensions)
 
     alternate: SizeCandidate | None = None
     if confidence < CONFIDENCE_TWO_CANDIDATE_THRESHOLD and second is not None:
-        # Orient the trade-off by where the runner-up sits overall.
+        # Orient the trade-off by where the runner-up sits overall. Summing
+        # signed deltas across dimensions is crude — it treats a cm of neck
+        # like a cm of chest — but it only picks which of two words to print,
+        # and the sizes it separates differ in the same direction on nearly
+        # every dimension anyway.
         roomier = sum(second.per_dimension_deltas.values()) > sum(
             best.per_dimension_deltas.values()
         )
@@ -207,7 +335,7 @@ def recommend(fit_profile: FitProfile, brand_product: BrandProduct) -> Recommend
         )
         alternate = SizeCandidate(
             size_label=second.size_label,
-            fit_notes=_fit_notes_for(fit_profile, second),
+            fit_notes=_fit_notes_for(dimensions, second),
             tradeoff=f"A {direction} alternative if you prefer that over the {best.size_label}.",
         )
 
@@ -218,4 +346,5 @@ def recommend(fit_profile: FitProfile, brand_product: BrandProduct) -> Recommend
         confidence=confidence,
         reference_garments=references,
         alternate=alternate,
+        use_case_assumed=assumed,
     )

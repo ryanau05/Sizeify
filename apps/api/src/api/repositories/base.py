@@ -51,16 +51,58 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
     )
 
 
+#: Key under which ``transaction`` tracks its own nesting depth on the session.
+_DEPTH_KEY = "api.repositories.base.transaction_depth"
+
+
 @asynccontextmanager
 async def transaction(session: AsyncSession) -> AsyncIterator[AsyncSession]:
     """Run a unit of work inside a DB transaction.
 
-    Commits on clean exit; rolls back if the block raises. Repositories that
+    Commits on clean exit; rolls back if the block raises. Callers that
     mutate state are expected to wrap their work in this helper instead of
     calling ``session.commit()`` directly so the rollback path stays uniform.
+
+    Deliberately does **not** call ``session.begin()``. SQLAlchemy autobegins
+    a transaction on the session's first statement, so an explicit ``begin()``
+    raises "a transaction is already begun" whenever the caller read something
+    before deciding to write — which is every read-then-write handler
+    (``POST /auth/login`` loads the user, verifies the password, then issues
+    tokens).
+
+    Nesting
+    -------
+    An inner block opens a SAVEPOINT instead of committing, so it can fail and
+    roll back its own work while the outer block carries on, and only the
+    outermost exit commits. Without that, an inner block's exit committed and
+    *ended* the outer transaction; statements after it autobegan a new one, so
+    an outer failure rolled back only the tail while the inner work stayed
+    permanently committed. Nothing nests today — the Phase 6 share-sheet path
+    (profile build, recommendation persist, push dispatch) is what will.
+
+    Depth is tracked explicitly on ``session.info`` rather than inferred from
+    ``session.in_transaction()``, because autobegin makes that true as soon as
+    the caller reads anything. ``PATCH /closet/garments/{id}`` loads the
+    garment before deciding to write, so an inferred check would mistake the
+    outermost block for a nested one and never commit it.
     """
-    async with session.begin():
-        yield session
+    depth: int = session.info.get(_DEPTH_KEY, 0)
+    session.info[_DEPTH_KEY] = depth + 1
+    try:
+        if depth:
+            async with session.begin_nested():
+                yield session
+        else:
+            try:
+                yield session
+                # Inside the try: a failure *during* commit must roll back too,
+                # rather than relying on ``deps.get_session`` two layers up.
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        session.info[_DEPTH_KEY] = depth
 
 
 class Repository[EntityT: Base, IdT]:

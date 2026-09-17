@@ -17,10 +17,12 @@ restarting the process.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 from _factories import make_user
+from _keys import ALTERNATE_JWT_SECRET, TEST_JWT_SECRET
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import jwt as auth_jwt
@@ -33,6 +35,7 @@ from api.auth.jwt import (
     issue_pair,
     rotate,
 )
+from api.config import get_settings
 from api.repositories.refresh_tokens import RefreshTokenRepository
 
 
@@ -41,7 +44,8 @@ def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # Non-empty so ``_secret()`` doesn't raise; value is irrelevant past
     # that. Set via env var so the same ``Settings`` resolution path the
     # app uses in production exercises here too.
-    monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
+    get_settings.cache_clear()
     yield
 
 
@@ -137,7 +141,8 @@ def test_decode_raises_on_wrong_secret(
     # Length ≥32 bytes — pyjwt's HS256 emits an InsecureKeyLengthWarning
     # otherwise, which would clutter the test output without flagging a
     # real bug.
-    monkeypatch.setenv("JWT_SECRET", "a-completely-different-32+-byte-secret")
+    monkeypatch.setenv("JWT_SECRET", ALTERNATE_JWT_SECRET)
+    get_settings.cache_clear()
     with pytest.raises(InvalidTokenError):
         decode(tok)
 
@@ -146,6 +151,7 @@ def test_decode_raises_when_jwt_secret_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("JWT_SECRET", "")
+    get_settings.cache_clear()
     # Refuse to operate without a key — defense against a misconfigured
     # production deploy.
     with pytest.raises(RuntimeError, match="JWT_SECRET is empty"):
@@ -232,3 +238,106 @@ async def test_reused_refresh_revokes_entire_chain(
     # (revoke_all_for_user is idempotent on already-revoked rows).
     with pytest.raises(ReusedRefreshTokenError):
         await rotate(refresh, repo)
+
+
+async def test_mark_revoked_reports_whether_it_won_the_race(
+    db_session: AsyncSession,
+) -> None:
+    """The return value is what makes rotation single-use.
+
+    Two concurrent rotations both read ``revoked_at IS NULL`` and both run
+    the UPDATE; the loser matches zero rows. When that fact was discarded,
+    both callers went on to mint a token pair, so a stolen refresh token
+    could be raced into a second permanent chain with no replay alarm.
+    """
+    user = await make_user(db_session)
+    repo = RefreshTokenRepository(db_session)
+    _, refresh = await issue_pair(user.id, repo)
+    row = await repo.get_by_hash(auth_jwt._hash_refresh(refresh))
+    assert row is not None
+
+    assert await repo.mark_revoked(row.id) is True, "first revoke should win"
+    assert await repo.mark_revoked(row.id) is False, "second must report it lost"
+
+
+async def test_rotate_treats_a_lost_race_as_replay(db_session: AsyncSession) -> None:
+    """Simulates the loser of the compare-and-swap: the row is already
+    revoked by the time ``rotate`` runs its UPDATE, so it must revoke the
+    whole chain and raise rather than issue a pair."""
+    user = await make_user(db_session)
+    repo = RefreshTokenRepository(db_session)
+    _, first = await issue_pair(user.id, repo)
+    _, second = await issue_pair(user.id, repo)
+
+    row = await repo.get_by_hash(auth_jwt._hash_refresh(first))
+    assert row is not None
+    await repo.mark_revoked(row.id)  # the winner got here first
+
+    with pytest.raises(ReusedRefreshTokenError):
+        await rotate(first, repo)
+
+    # The whole chain is revoked, so the other token is dead too.
+    other = await repo.get_by_hash(auth_jwt._hash_refresh(second))
+    assert other is not None
+    assert other.revoked_at is not None
+
+
+async def test_rotate_treats_a_lost_update_as_replay(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other shape of the same race, and the only one the SELECT cannot
+    see: the row still reads as live when ``rotate`` fetches it, and the
+    compare-and-swap UPDATE then matches zero rows because a concurrent
+    rotation landed in between.
+
+    ``test_rotate_treats_a_lost_race_as_replay`` above exercises the
+    already-revoked branch, which returns before the UPDATE runs — so
+    without this, the branch that reads ``mark_revoked``'s return value has
+    nothing pinning it, and dropping it would silently mint a second live
+    chain for whoever wins the race.
+    """
+    user = await make_user(db_session)
+    repo = RefreshTokenRepository(db_session)
+    _, first = await issue_pair(user.id, repo)
+    _, second = await issue_pair(user.id, repo)
+
+    async def _lost_the_race(self: RefreshTokenRepository, id: object) -> bool:
+        return False
+
+    monkeypatch.setattr(RefreshTokenRepository, "mark_revoked", _lost_the_race)
+
+    with pytest.raises(ReusedRefreshTokenError):
+        await rotate(first, repo)
+
+    monkeypatch.undo()
+    # The loser still raises the alarm: the whole chain goes, not just this row.
+    other = await repo.get_by_hash(auth_jwt._hash_refresh(second))
+    assert other is not None
+    assert other.revoked_at is not None
+
+
+def test_decode_rejects_an_unknown_token_type() -> None:
+    """A JWT signed with our own active key but carrying a ``typ`` this build
+    does not know — what a rolled-back deploy sees once a third token flavour
+    ships. It must be refused rather than coerced into access or refresh,
+    which is the difference between "unrecognized credential" and "treated as
+    the most permissive thing we can parse".
+    """
+    import jwt as pyjwt
+
+    now = datetime.now(UTC)
+    token = pyjwt.encode(
+        {
+            "sub": str(uuid4()),
+            "typ": "impersonation",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+            "jti": uuid4().hex,
+        },
+        auth_jwt._secret(),
+        algorithm=auth_jwt.ALGORITHM,
+        headers={"kid": auth_jwt.KEY_ID},
+    )
+
+    with pytest.raises(InvalidTokenError, match="unknown token type"):
+        decode(token)

@@ -8,10 +8,10 @@ conversion happens at the UI boundary (CLAUDE.md).
 """
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from api.schemas.enums import (
     FitSignalSource,
@@ -34,7 +34,7 @@ class MeasurementValue(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    value: float = Field(gt=0)
+    value: float = Field(gt=0, allow_inf_nan=False)
     unit: Literal["cm"] = "cm"
     source: Literal["manual_tape", "cv_assisted", "imported"]
 
@@ -43,7 +43,22 @@ class MeasurementValue(BaseModel):
 # (``chest``, ``body_length``, …). Validation against the category
 # schema lives in the route handler (TKT-P1-09) because the schema is
 # a dynamic per-category JSONB blob.
-GarmentMeasurements = dict[str, MeasurementValue]
+#: The v1 category declares six dimensions; the cap is well clear of that and
+#: of any plausible successor. Bounded because every *string* here had a
+#: length limit but neither collection had a size limit, so one request body
+#: could carry hundreds of thousands of unknown keys — each parsed into a
+#: model, each turned into a MeasurementProblem, each rendered into the 422
+#: body, amplifying the input through three full materializations.
+MAX_MEASUREMENT_DIMENSIONS = 32
+
+GarmentMeasurements = Annotated[
+    dict[str, MeasurementValue], Field(max_length=MAX_MEASUREMENT_DIMENSIONS)
+]
+
+#: PRD §6.4 use cases are a short human list ("work", "gym", "weekend").
+#: Unbounded, a single array landed in the ARRAY(Text) column and was re-read
+#: by every closet list, fit-profile build and GDPR export thereafter.
+MAX_USE_CASES = 20
 
 
 # Free-text labels carry user data into the LLM extraction pipeline —
@@ -66,7 +81,7 @@ class _OwnedGarmentBase(BaseModel):
     fabric_composition: _FabricCompositionField | None = None
     stretch_level: StretchLevel | None = None
     overall_rating: OverallRating | None = None
-    use_cases: list[_UseCaseField] = Field(default_factory=list)
+    use_cases: list[_UseCaseField] = Field(default_factory=list, max_length=MAX_USE_CASES)
 
 
 class OwnedGarmentCreate(_OwnedGarmentBase):
@@ -75,9 +90,22 @@ class OwnedGarmentCreate(_OwnedGarmentBase):
     ``category_id`` is the garment_category slug (e.g.
     ``"mens_button_down_shirt"``). v1 only accepts the seeded slug; the
     route validates against ``garment_category`` before insert.
+
+    ``extra="forbid"`` here and not on ``_OwnedGarmentBase`` so the response
+    model stays permissive: strictness belongs on what clients send, not on
+    what we build from a database row. Without it, create silently dropped
+    unknown fields while PATCH rejected them, so a client typo failed loudly
+    on one verb and silently on the other.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     category_id: str = Field(min_length=1, max_length=100)
+
+
+#: Fields whose columns are NOT NULL. Omitting them means "leave alone";
+#: sending them as ``null`` is a client error, not a clear-the-field request.
+_NOT_NULLABLE_ON_UPDATE = ("brand", "size_label", "measurements", "use_cases")
 
 
 class OwnedGarmentUpdate(BaseModel):
@@ -87,9 +115,40 @@ class OwnedGarmentUpdate(BaseModel):
     intentionally omitted — re-categorizing an existing garment would
     invalidate its fit signals (different dimension set), so the client
     must delete-and-recreate instead.
+
+    "Optional" here means *omittable*, not *nullable*. Four of these back
+    NOT NULL columns and are rejected when sent explicitly as ``null``;
+    only ``product_name``, ``fabric_composition``, ``stretch_level`` and
+    ``overall_rating`` can actually be cleared.
+
+    That distinction is load-bearing rather than pedantic. SQLAlchemy's
+    JSON type maps Python ``None`` onto JSON ``null`` instead of SQL NULL,
+    so ``{"measurements": null}`` used to slip past the NOT NULL constraint
+    and store ``'null'::jsonb`` — after which every read of that garment
+    (the closet list, the fit profile, and the GDPR export) raised, for
+    good. One ordinary PATCH could permanently brick an account.
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_nulls(cls, data: Any) -> Any:
+        """422 on a present-but-null key backing a NOT NULL column.
+
+        Runs in ``before`` mode because the distinction being enforced is
+        "was the key present at all", which is gone by the time the fields
+        are parsed — an omitted field and an explicit ``null`` both arrive
+        as ``None`` afterwards.
+        """
+        if not isinstance(data, dict):
+            return data
+        nulled = [f for f in _NOT_NULLABLE_ON_UPDATE if f in data and data[f] is None]
+        if nulled:
+            raise ValueError(
+                "cannot be cleared; omit the field to leave it unchanged: " + ", ".join(nulled)
+            )
+        return data
 
     brand: _BrandField | None = None
     product_name: _ProductNameField | None = None
@@ -98,7 +157,7 @@ class OwnedGarmentUpdate(BaseModel):
     fabric_composition: _FabricCompositionField | None = None
     stretch_level: StretchLevel | None = None
     overall_rating: OverallRating | None = None
-    use_cases: list[_UseCaseField] | None = None
+    use_cases: list[_UseCaseField] | None = Field(default=None, max_length=MAX_USE_CASES)
 
 
 class OwnedGarmentResponse(_OwnedGarmentBase):
@@ -134,11 +193,23 @@ class FitSignalCreate(BaseModel):
     land with ``source = "user_added"`` and the route synthesizes the
     ``raw_feedback_text`` column from the dimension+verdict combo when
     the client doesn't supply one (CLAUDE.md: column is never null).
+
+    Extras are forbidden so a body carrying ``source`` — the one field this
+    endpoint deliberately refuses to let clients set — is a 422 naming it. It
+    used to be dropped in silence, so a client that believed it was writing
+    ``nlp_extracted`` rows never found out otherwise.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     dimension: str = Field(min_length=1, max_length=100)
     verdict: Verdict
-    magnitude_cm: float | None = Field(default=None, ge=0)
+    # Bounded to the NUMERIC(6, 2) column it lands in. Unbounded, an ordinary
+    # request body (magnitude_cm: 100000.0, or a JSON `Infinity` literal, which
+    # stdlib json accepts) reached Postgres and came back as an unhandled
+    # NumericValueOutOfRangeError — a 500 where the contract says 422. The
+    # ceiling is deliberately far past any real garment: no sleeve is 1 m off.
+    magnitude_cm: float | None = Field(default=None, ge=0, le=100.0, allow_inf_nan=False)
     use_case: _UseCaseField | None = None
     raw_feedback_text: str | None = Field(default=None, max_length=2000)
 

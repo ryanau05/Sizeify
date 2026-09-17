@@ -44,8 +44,15 @@ shadow the built-in ``hash`` and ``verify`` is not built-in. Importers
 should prefer the qualified form (``from api.auth import password;
 password.hash(...)``) over ``from api.auth.password import hash`` to
 avoid local-scope confusion.
+
+Route handlers should call ``hash_async`` / ``verify_async`` rather than
+wrapping the sync forms themselves: those run off the event loop *and*
+under a shared ``CapacityLimiter``, without which concurrent hashing peaks
+at 40 x 128 MiB. See ``MAX_CONCURRENT_HASHES``.
 """
 
+import anyio
+import anyio.to_thread
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import InvalidHashError, VerificationError
 
@@ -124,3 +131,65 @@ def verify(password: str, hash: str) -> bool:
     except (VerificationError, InvalidHashError):
         return False
     return True
+
+
+def needs_rehash(hash: str) -> bool:
+    """Was ``hash`` produced with weaker parameters than we use now?
+
+    The module's whole premise is that ``MEMORY_COST_KIB`` gets re-measured and
+    raised on production hardware. Without this check that only helps accounts
+    created *after* the change: every existing user keeps their old, weaker
+    hash forever, and there is no path to upgrade it short of a password reset
+    (which this product does not have).
+
+    Login is the one moment the plaintext is in hand and can be re-hashed, so
+    it is the only place the upgrade can happen. Returns ``False`` for a hash
+    this module cannot parse — migration 0003's ``LOCKED_PASSWORD_HASH``
+    sentinel among them — since re-hashing something that never verified would
+    be meaningless.
+    """
+    try:
+        return _hasher.check_needs_rehash(hash)
+    except InvalidHashError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Off-loop execution
+# ---------------------------------------------------------------------------
+
+#: Maximum argon2 operations allowed to run at once.
+#:
+#: Each one holds ``MEMORY_COST_KIB`` (128 MiB) for its duration — that is the
+#: point of the parameter, and it is what makes concurrency a memory question
+#: rather than a CPU one. anyio's default thread pool is 40 tokens wide, so
+#: unbounded hashing peaks at 40 x 128 MiB = 5 GiB resident, which one account
+#: can reach on its own: ``DELETE /me`` verifies a password and sits behind a
+#: 120/minute budget, so a single valid token puts the whole pool to work and
+#: OOM-kills a 2 GiB container.
+#:
+#: Eight is ~1 GiB of headroom. Raise it only together with the container's
+#: memory limit, and remember the two are multiplied by MEMORY_COST_KIB.
+MAX_CONCURRENT_HASHES = 8
+
+_hash_limiter = anyio.CapacityLimiter(MAX_CONCURRENT_HASHES)
+
+
+async def hash_async(password: str) -> str:
+    """``hash``, off the event loop and under the concurrency bound."""
+    return await anyio.to_thread.run_sync(hash, password, limiter=_hash_limiter)
+
+
+async def verify_async(password: str, hash_: str) -> bool:
+    """``verify``, off the event loop and under the concurrency bound."""
+    return await anyio.to_thread.run_sync(verify, password, hash_, limiter=_hash_limiter)
+
+
+async def needs_rehash_async(hash_: str) -> bool:
+    """``needs_rehash``, off the event loop and under the concurrency bound.
+
+    Cheap relative to the others — it parses the PHC string rather than
+    recomputing the digest — but it shares the limiter so the accounting stays
+    in one place.
+    """
+    return await anyio.to_thread.run_sync(needs_rehash, hash_, limiter=_hash_limiter)
