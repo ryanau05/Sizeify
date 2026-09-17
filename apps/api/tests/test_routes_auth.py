@@ -27,6 +27,7 @@ import sqlalchemy as sa
 from _factories import TEST_PASSWORD, make_user
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import jwt as auth_jwt
@@ -607,3 +608,31 @@ async def test_login_upgrades_a_weakly_hashed_password(
     assert stored.password_hash != weak
     assert auth_password.needs_rehash(stored.password_hash) is False
     assert auth_password.verify(PASSWORD, stored.password_hash) is True
+
+
+async def test_signup_does_not_swallow_an_unrelated_constraint_violation(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only an email collision may take the silent 202 path.
+
+    Catching every ``IntegrityError`` meant any other constraint — a future
+    CHECK, FK, or NOT NULL — also answered "account has been created", created
+    nothing, and logged it as an existing address. Because signup is
+    deliberately non-enumerable, the user could not tell that apart from a
+    taken address: 202 here, then 401 on every login attempt, permanently,
+    with no signal that anything had broken.
+    """
+    original_create = UserRepository.create
+
+    async def _violates_something_else(self: UserRepository, **kwargs: Any) -> User:
+        await original_create(self, **kwargs)
+        raise IntegrityError(
+            "INSERT INTO ...",
+            {},
+            Exception('violates check constraint "user_some_future_check"'),
+        )
+
+    monkeypatch.setattr(UserRepository, "create", _violates_something_else)
+
+    with pytest.raises(IntegrityError):
+        await client.post("/auth/signup", json=signup_body(email="unrelated@example.com"))

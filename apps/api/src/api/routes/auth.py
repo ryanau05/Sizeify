@@ -147,6 +147,35 @@ _INVALID_CREDENTIALS_RESPONSE: dict[int | str, dict[str, Any]] = {
 }
 
 
+#: The two constraints that mean "this address is already registered":
+#: 0001's exact-match UNIQUE on ``email`` and 0005's functional unique index
+#: on ``lower(email)``.
+_EMAIL_UNIQUE_CONSTRAINTS = frozenset({"user_email_key", "uq_user_email_lower"})
+
+
+def _constraint_name(exc: IntegrityError) -> str | None:
+    """The Postgres constraint an IntegrityError came from, if it says.
+
+    The attribute is not on ``exc.orig``: SQLAlchemy's asyncpg dialect wraps
+    the driver error in its own DBAPI-shaped ``IntegrityError`` and hangs the
+    real ``asyncpg.exceptions.UniqueViolationError`` — the one carrying
+    ``constraint_name`` — off ``__cause__``. So walk the chain rather than
+    guessing at a depth.
+
+    Returns ``None`` when nothing in the chain names a constraint, which the
+    caller treats as "not an email collision" and re-raises. Failing closed is
+    the point: an unrecognized constraint must surface, not be answered with
+    a cheerful 202.
+    """
+    error: BaseException | None = exc.orig
+    while error is not None:
+        name = getattr(error, "constraint_name", None)
+        if name:
+            return str(name)
+        error = error.__cause__
+    return None
+
+
 @router.post(
     "/signup",
     status_code=status.HTTP_202_ACCEPTED,
@@ -188,10 +217,20 @@ async def signup(
                 stated_fit_preference=body.stated_fit_preference,
             )
             logger.info("auth.signup.created", extra={"user_id": str(user.id)})
-    except IntegrityError:
+    except IntegrityError as exc:
         # The ``get_by_email`` check above loses to a concurrent signup for
         # the same address; the UNIQUE index is what actually decides. The
         # loser takes the same silent path as the check would have.
+        #
+        # Only for the email constraints, though. Catching every
+        # IntegrityError meant any future CHECK, FK or NOT NULL violation also
+        # returned "account created", created nothing, and — because this
+        # endpoint is deliberately non-enumerable — left the user with no way
+        # to tell that apart from a taken address. They would get 202 here and
+        # 401 on every login attempt afterwards, permanently, with no signal
+        # that anything had broken.
+        if _constraint_name(exc) not in _EMAIL_UNIQUE_CONSTRAINTS:
+            raise
         _log_existing_address()
         return SignupAccepted()
 

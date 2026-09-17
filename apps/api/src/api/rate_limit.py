@@ -55,7 +55,6 @@ import ipaddress
 import logging
 import math
 import time
-from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from re import Pattern
@@ -71,16 +70,33 @@ logger = logging.getLogger(__name__)
 DEFAULT_CAPACITY = 10
 DEFAULT_WINDOW_SECONDS = 60
 
-# Hard ceiling on resident buckets. Past this, the oldest are evicted in
-# insertion order, so the table's size is bounded by this constant rather
-# than by how fast an attacker can mint keys. Well above any plausible
-# Phase 1 concurrent-client count, so honest traffic never reaches it.
+# Hard ceiling on resident buckets. At the cap, new keys share the overflow
+# bucket below rather than evicting anyone, so the table is bounded by this
+# constant regardless of how fast an attacker mints keys. Well above any
+# plausible Phase 1 concurrent-client count, so honest traffic never reaches
+# it.
 #
-# The earlier comment here said 10,000 was "well above any plausible
+# The original comment here said 10,000 was "well above any plausible
 # concurrent-client count, so pruning is rare" — a statement about honest
 # traffic that said nothing about an attacker, which is the only case that
 # matters for a limit whose job is to survive one.
 _MAX_BUCKETS = 10_000
+
+#: Shared bucket for every key that arrives once the table is full.
+#:
+#: The obvious alternative — evict something to make room — is wrong here, and
+#: subtly so. A bucket's whole content is *spent budget*; deleting it restores
+#: that key to full capacity. So eviction under pressure hands a fresh
+#: allowance to whichever key gets evicted, and a throttled client can trigger
+#: its own by flooding new keys. Measured against the evicting version: a
+#: client with 0 of 3 tokens left, after minting enough keys to overflow the
+#: table, was served again immediately.
+#:
+#: Sharing degrades the opposite way. Existing buckets are never disturbed, so
+#: no established client — honest or not — can be reset. New arrivals during a
+#: flood share one budget and throttle each other, which is the correct
+#: behaviour when the table is full: the flood is what is consuming it.
+_OVERFLOW_KEY = "<overflow>"
 
 
 @dataclass
@@ -110,8 +126,7 @@ class TokenBucketLimiter:
         self._capacity = float(capacity)
         self._window_seconds = float(window_seconds)
         self._refill_per_second = self._capacity / self._window_seconds
-        # Insertion-ordered so the oldest key is the cheapest to evict.
-        self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
+        self._buckets: dict[str, _Bucket] = {}
         self._last_prune = 0.0
 
     def acquire(self, key: str, *, now: float | None = None) -> float | None:
@@ -126,13 +141,24 @@ class TokenBucketLimiter:
 
         bucket = self._buckets.get(key)
         if bucket is None:
+            self._prune(now)
+            if len(self._buckets) >= _MAX_BUCKETS:
+                # Table is full even after reclaiming idle keys. Share the
+                # overflow bucket rather than evicting a live one.
+                bucket = self._buckets.get(_OVERFLOW_KEY)
+                key = _OVERFLOW_KEY
+
+        if bucket is None:
+            # A key's first request starts from a full bucket. It still goes
+            # through the check below rather than short-circuiting to "allow":
+            # ``capacity=0`` closes the endpoint, and a first request is not
+            # exempt from that.
             bucket = _Bucket(tokens=self._capacity, updated_at=now)
             self._buckets[key] = bucket
-            self._prune(now)
-        else:
-            elapsed = max(0.0, now - bucket.updated_at)
-            bucket.tokens = min(self._capacity, bucket.tokens + elapsed * self._refill_per_second)
-            bucket.updated_at = now
+
+        elapsed = max(0.0, now - bucket.updated_at)
+        bucket.tokens = min(self._capacity, bucket.tokens + elapsed * self._refill_per_second)
+        bucket.updated_at = now
 
         if bucket.tokens < 1.0:
             if self._refill_per_second == 0.0:
@@ -161,15 +187,16 @@ class TokenBucketLimiter:
         rebuilt the whole dict — O(n) of synchronous work on the event loop,
         for each of n arrivals, so the cost was quadratic in the flood.
 
-        Now the sweep runs at most once per window, and whatever it fails to
-        reclaim is made up by evicting in insertion order until the table is
-        back under ``_MAX_BUCKETS``. That ceiling holds regardless of key
-        freshness. Evicting a bucket forgets a partially-spent budget, which
-        is why the age sweep goes first: it reclaims genuinely idle keys, and
-        only a table still over the cap afterwards — that is, one under active
-        flood — starts dropping live state. Under that flood the alternative
-        is unbounded memory, and the evicted keys are overwhelmingly the
-        attacker's own.
+        Now the sweep runs at most once per window and only reclaims keys that
+        are genuinely idle. Nothing live is ever dropped: when the table is
+        still full afterwards, ``acquire`` routes new keys to
+        ``_OVERFLOW_KEY`` instead of evicting to make room.
+
+        That distinction is the whole point. A bucket's content is *spent
+        budget*, so deleting one restores its key to full capacity — eviction
+        under pressure is indistinguishable from a rate-limit reset, and a
+        throttled client can trigger its own by minting keys until the table
+        overflows. See ``_OVERFLOW_KEY``.
         """
         if now - self._last_prune >= self._window_seconds:
             self._last_prune = now
@@ -182,9 +209,6 @@ class TokenBucketLimiter:
                 if now - bucket.updated_at >= self._window_seconds
             ]:
                 del self._buckets[key]
-
-        while len(self._buckets) > _MAX_BUCKETS:
-            self._buckets.popitem(last=False)
 
     def reset(self) -> None:
         """Forget all buckets. Test-support only."""
@@ -322,11 +346,21 @@ class RateLimitMiddleware:
         if token is not None:
             try:
                 claims = auth_jwt.decode(token)
-            except auth_jwt.JwtError:
+            except Exception:
                 # Expired, forged, malformed, or signed with a retired key.
                 # It will 401 downstream; bill the address meanwhile so the
                 # attempt still costs the sender something.
-                pass
+                #
+                # Deliberately broader than ``JwtError``. This runs in raw ASGI
+                # before routing, so an exception here escapes past every
+                # FastAPI handler and 500s the request — and ``decode`` raises
+                # a bare RuntimeError when JWT_SECRET is unset, which
+                # ``config`` defaults to "". One forgotten environment variable
+                # would otherwise turn every authenticated request into a 500
+                # with no route ever reached. Identifying the caller is a
+                # best-effort optimisation over billing the address; it must
+                # never be the thing that fails the request.
+                logger.warning("rate_limit.principal.undecodable")
             else:
                 return f"user:{claims.user_id}"
         # Unauthenticated request to an authenticated surface: it will 401, but

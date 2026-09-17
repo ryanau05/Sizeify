@@ -395,3 +395,54 @@ def test_unauthenticated_request_to_an_authenticated_surface_bills_the_address()
     s["path"] = "/closet/garments"
 
     assert middleware._principal(s) == "198.51.100.4"
+
+
+def test_a_full_table_never_resets_an_existing_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overflow must not hand a throttled client a fresh allowance.
+
+    The table was previously kept under its cap by evicting in insertion
+    order. A bucket's content is spent budget, so evicting one restores that
+    key to full capacity — which made eviction a rate-limit reset that the
+    throttled client could trigger itself, simply by minting enough new keys
+    to overflow the table. Measured against that version: a client with zero
+    tokens left was served again immediately after the flood.
+    """
+    monkeypatch.setattr(rate_limit, "_MAX_BUCKETS", 50)
+    limiter = TokenBucketLimiter(capacity=3, window_seconds=600)
+    now = 1000.0
+
+    for _ in range(3):
+        assert limiter.acquire("spender", now=now) is None
+    assert limiter.acquire("spender", now=now) is not None, "should be out of tokens"
+
+    # Flood the table well past the cap, inside the window so nothing is idle
+    # enough for the age sweep to reclaim.
+    for i in range(60):
+        limiter.acquire(f"filler-{i}", now=now)
+
+    assert "spender" in limiter._buckets, "a live bucket was dropped"
+    assert limiter.acquire("spender", now=now) is not None, (
+        "flooding the table reset an exhausted budget"
+    )
+
+
+def test_overflow_keys_share_one_budget_and_the_table_stays_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past the cap, new arrivals share a bucket rather than growing the dict.
+
+    Sharing is the intended degradation: during a flood the new keys *are* the
+    flood, so throttling them against each other is correct. The ceiling holds
+    no matter how fast keys arrive.
+    """
+    monkeypatch.setattr(rate_limit, "_MAX_BUCKETS", 20)
+    limiter = TokenBucketLimiter(capacity=5, window_seconds=600)
+    now = 1000.0
+
+    outcomes = [limiter.acquire(f"key-{i}", now=now) for i in range(200)]
+
+    assert len(limiter._buckets) <= 20 + 1, "table grew past the cap"
+    assert rate_limit._OVERFLOW_KEY in limiter._buckets
+    assert any(o is not None for o in outcomes), "overflow arrivals were never throttled"

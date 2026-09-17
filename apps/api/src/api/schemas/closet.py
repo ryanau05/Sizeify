@@ -43,7 +43,22 @@ class MeasurementValue(BaseModel):
 # (``chest``, ``body_length``, …). Validation against the category
 # schema lives in the route handler (TKT-P1-09) because the schema is
 # a dynamic per-category JSONB blob.
-GarmentMeasurements = dict[str, MeasurementValue]
+#: The v1 category declares six dimensions; the cap is well clear of that and
+#: of any plausible successor. Bounded because every *string* here had a
+#: length limit but neither collection had a size limit, so one request body
+#: could carry hundreds of thousands of unknown keys — each parsed into a
+#: model, each turned into a MeasurementProblem, each rendered into the 422
+#: body, amplifying the input through three full materializations.
+MAX_MEASUREMENT_DIMENSIONS = 32
+
+GarmentMeasurements = Annotated[
+    dict[str, MeasurementValue], Field(max_length=MAX_MEASUREMENT_DIMENSIONS)
+]
+
+#: PRD §6.4 use cases are a short human list ("work", "gym", "weekend").
+#: Unbounded, a single array landed in the ARRAY(Text) column and was re-read
+#: by every closet list, fit-profile build and GDPR export thereafter.
+MAX_USE_CASES = 20
 
 
 # Free-text labels carry user data into the LLM extraction pipeline —
@@ -66,7 +81,7 @@ class _OwnedGarmentBase(BaseModel):
     fabric_composition: _FabricCompositionField | None = None
     stretch_level: StretchLevel | None = None
     overall_rating: OverallRating | None = None
-    use_cases: list[_UseCaseField] = Field(default_factory=list)
+    use_cases: list[_UseCaseField] = Field(default_factory=list, max_length=MAX_USE_CASES)
 
 
 class OwnedGarmentCreate(_OwnedGarmentBase):
@@ -142,7 +157,7 @@ class OwnedGarmentUpdate(BaseModel):
     fabric_composition: _FabricCompositionField | None = None
     stretch_level: StretchLevel | None = None
     overall_rating: OverallRating | None = None
-    use_cases: list[_UseCaseField] | None = None
+    use_cases: list[_UseCaseField] | None = Field(default=None, max_length=MAX_USE_CASES)
 
 
 class OwnedGarmentResponse(_OwnedGarmentBase):

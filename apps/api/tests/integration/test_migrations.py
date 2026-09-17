@@ -31,6 +31,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 import pytest_asyncio
+from sqlalchemy.engine import URL, make_url
 
 from api.config import get_settings
 
@@ -56,9 +57,9 @@ EXPECTED_LOCKED_HASH = "!locked-no-password-set"
 EXPECTED_SYNTHETIC_CONSENT_YEAR = 1970
 
 
-def _asyncpg_dsn(url: str) -> str:
-    """Strip SQLAlchemy's ``+asyncpg`` dialect marker for a raw connection."""
-    return url.replace("postgresql+asyncpg://", "postgresql://")
+def _asyncpg_dsn(url: URL) -> str:
+    """A raw libpq DSN for ``url``, without SQLAlchemy's dialect marker."""
+    return url.set(drivername="postgresql").render_as_string(hide_password=False)
 
 
 def _alembic(command: str, *args: str, url: str, allow_destructive: bool = False) -> str:
@@ -89,17 +90,48 @@ def _alembic(command: str, *args: str, url: str, allow_destructive: bool = False
     return result.stdout + result.stderr
 
 
+#: Suffix that marks a database as this module's to destroy. Asserted before
+#: any DDL runs — see ``migration_db``.
+THROWAWAY_SUFFIX = "_migchain"
+
+
 @pytest_asyncio.fixture
 async def migration_db() -> AsyncIterator[str]:
     """An empty database, dropped again afterwards.
 
     Named off the configured database so it lands on the same server with the
     same credentials, and suffixed so it can never collide with the real one.
+
+    The name is derived with ``make_url``, not string surgery. An earlier
+    version did ``database_url.rpartition("/")``, which is not URL parsing: for
+    a URL carrying a query string — ``?ssl=require``, the norm on RDS, Cloud
+    SQL, Neon and Supabase — the suffix landed inside the *query string*
+    instead of the database name::
+
+        .../sizeify?ssl=require  ->  .../sizeify?ssl=require_migchain
+
+    ``CREATE DATABASE`` then made an unrelated empty database while the URL
+    handed to the tests still resolved to ``sizeify`` — the real one — and
+    ``test_full_downgrade_and_re_upgrade_cycle`` ran ``alembic downgrade base``
+    against it with ``ALEMBIC_ALLOW_DESTRUCTIVE_DOWNGRADE=1`` set, dropping
+    every table, and still asserted green. The suffix was doing all the safety
+    work and one query parameter defeated it.
+
+    So the suffix is no longer trusted to be safe by construction: it is
+    checked, against the parsed database name, before a single statement runs.
     """
-    settings_url = get_settings().database_url
-    base, _, name = settings_url.rpartition("/")
-    throwaway = f"{name}_migchain"
-    admin_dsn = _asyncpg_dsn(f"{base}/postgres")
+    configured = make_url(get_settings().database_url)
+    original = configured.database
+    assert original, f"DATABASE_URL names no database: {configured.render_as_string()}"
+
+    throwaway_url = configured.set(database=f"{original}{THROWAWAY_SUFFIX}")
+    throwaway = throwaway_url.database
+    assert throwaway and throwaway.endswith(THROWAWAY_SUFFIX) and throwaway != original, (
+        f"refusing to run destructive migrations against {throwaway!r} — "
+        f"it is not a {THROWAWAY_SUFFIX} database"
+    )
+
+    admin_dsn = _asyncpg_dsn(configured.set(database="postgres"))
 
     conn = await asyncpg.connect(admin_dsn)
     try:
@@ -109,7 +141,7 @@ async def migration_db() -> AsyncIterator[str]:
         await conn.close()
 
     try:
-        yield f"{base}/{throwaway}"
+        yield throwaway_url.render_as_string(hide_password=False)
     finally:
         conn = await asyncpg.connect(admin_dsn)
         try:
@@ -119,7 +151,7 @@ async def migration_db() -> AsyncIterator[str]:
 
 
 async def _scalar(url: str, sql: str) -> object:
-    conn = await asyncpg.connect(_asyncpg_dsn(url))
+    conn = await asyncpg.connect(_asyncpg_dsn(make_url(url)))
     try:
         return await conn.fetchval(sql)
     finally:
@@ -147,7 +179,7 @@ async def test_consent_backfill_types_survive_a_populated_table(migration_db: st
     """
     _alembic("upgrade", PRE_CREDENTIALS_REVISION, url=migration_db)
 
-    conn = await asyncpg.connect(_asyncpg_dsn(migration_db))
+    conn = await asyncpg.connect(_asyncpg_dsn(make_url(migration_db)))
     try:
         await conn.execute(
             'INSERT INTO "user" (id, email, created_at, preferred_units) '
@@ -161,7 +193,7 @@ async def test_consent_backfill_types_survive_a_populated_table(migration_db: st
     version = await _scalar(migration_db, "SELECT version_num FROM alembic_version")
     assert version == HEAD_REVISION, f"backfill did not survive a populated table:\n{output}"
 
-    conn = await asyncpg.connect(_asyncpg_dsn(migration_db))
+    conn = await asyncpg.connect(_asyncpg_dsn(make_url(migration_db)))
     try:
         row = await conn.fetchrow('SELECT password_hash, privacy_consent_accepted_at FROM "user"')
     finally:
@@ -200,3 +232,36 @@ async def test_full_downgrade_and_re_upgrade_cycle(migration_db: str) -> None:
     up = _alembic("upgrade", "head", url=migration_db)
     version = await _scalar(migration_db, "SELECT version_num FROM alembic_version")
     assert version == HEAD_REVISION, f"re-upgrade after a full downgrade failed:\n{up}"
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        # The shape that defeated the original string-surgery derivation:
+        # a query string is the norm on RDS, Cloud SQL, Neon and Supabase.
+        "postgresql+asyncpg://u:p@db.example.com:5432/sizeify?ssl=require",
+        "postgresql+asyncpg://u:p@db.example.com:5432/sizeify?sslmode=require&foo=bar",
+        "postgresql+asyncpg://u:p@localhost:5432/sizeify",
+    ],
+)
+def test_throwaway_database_is_never_the_configured_one(database_url: str) -> None:
+    """The name this module destroys must be a ``_migchain`` database.
+
+    ``migration_db`` runs ``alembic downgrade base`` with the destructive
+    opt-in set, so the derived name is the only thing standing between these
+    tests and whatever ``DATABASE_URL`` points at. Deriving it with
+    ``rpartition("/")`` put the suffix in the query string of any URL carrying
+    one, leaving the yielded URL resolving to the real database while
+    ``CREATE DATABASE`` made an unrelated empty one — and the cycle test still
+    passed.
+    """
+    configured = make_url(database_url)
+    throwaway = configured.set(database=f"{configured.database}{THROWAWAY_SUFFIX}")
+
+    assert throwaway.database != configured.database
+    assert throwaway.database.endswith(THROWAWAY_SUFFIX)
+    # The suffix must be on the database, not smuggled into the query string.
+    assert throwaway.query == configured.query
+    assert make_url(throwaway.render_as_string(hide_password=False)).database == (
+        f"{configured.database}{THROWAWAY_SUFFIX}"
+    )
