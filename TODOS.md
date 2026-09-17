@@ -2,21 +2,18 @@
 
 ## Open
 
-A second, specialist pre-landing review ran before the Phase 1 PR. Six defects
-it found were fixed on the branch (see `docs/PROJECT_PLAN.md`); the items below
-were judged not worth blocking the PR for. None is reachable by an honest v1
-client at v1 scale — that is the standard used to defer them.
+Two further reviews ran before the Phase 1 PR: a specialist pass (six defects,
+all fixed) and an adversarial pass (five more, all fixed — plus the two below
+that were re-rated from "defer" to "fix" because one authenticated account
+could reach them). See `docs/PROJECT_PLAN.md`.
+
+The items below remain open. None is reachable by an honest v1 client at v1
+scale, and none is reachable by a *hostile* one either — that second test was
+added after the adversarial pass showed the first was not sufficient on its
+own.
 
 ### P2 — bound before real traffic
 
-- **Fit-signal creation is uncapped, and `use_case` is free text.** Garments
-  have `max_closet_garments`; signals have no ceiling. `build_fit_profile`
-  rebuilds the per-dimension posterior once per distinct `use_case`, so one
-  garment carrying thousands of distinct use-case strings pushes the build past
-  PRD §9.2's 100 ms budget. Measured on this hardware: a realistic 5-garment
-  closet is 0.2 ms, 50 garments x 50 tagged signals is 14.6 ms, and a single
-  garment with 2,000 distinct use cases is 314 ms. Needs a per-garment signal
-  cap and a bound on how many variants get built.
 - **`GET /me/export` is unbounded by design.** `limit=None` on all three
   queries is correct for Art. 15 — an export that stopped at 100 rows would be
   a compliance bug — but signals and recommendations have no ceiling, and every
@@ -61,6 +58,31 @@ client at v1 scale — that is the standard used to defer them.
 - **`FitSignalRepository.list_for_user`'s `limit` is untested,** and its
   `ORDER BY created_at, id` contract is unasserted. Its two sibling
   repositories both got paging tests on this branch.
+
+- **Refresh tokens are never collected.** A row is inserted on every login and
+  every rotation; `mark_revoked` and `revoke_all_for_user` only set
+  `revoked_at`, and there is no delete path or retention job. The table grows
+  monotonically with login volume. `rotate`'s own comment ("could be replay
+  after retention cleanup") assumes a cleanup that does not exist. Needs a
+  retention window and a job — Phase 8 shaped, alongside the Redis limiter.
+- **`POST /closet/garments` ceiling is TOCTOU.** `count_for_user` is read
+  outside the transaction that inserts, so concurrent creates all observe the
+  same pre-count and can overshoot `max_closet_garments`. Soft guard; overshoot
+  is small and bounded by concurrency.
+- **`"/me"` is matched as a substring prefix,** so a future `/metrics` or
+  `/members` route would be silently swept into the authenticated limiter.
+- **No `Cache-Control: no-store`** on `/auth/login`, `/auth/refresh` (token
+  pairs, RFC 6749 §5.1) or `GET /me/export` (a full PII dump).
+- **`_client_ip` does not normalize addresses,** so `2001:db8::1` and its
+  expanded form are different bucket keys. Only reachable through
+  `X-Forwarded-For` from a trusted peer, so it needs a proxy misconfiguration
+  to matter.
+- **`_signal_for` silently keeps only the last untagged signal** per dimension.
+  Latest-wins is defensible; it is undocumented, and a user who records five
+  chest verdicts has four discarded with no indication.
+- **`synthesize_feedback_text`'s docstring example uses `too_long`,** which is
+  not in the `Verdict` enum — the length axis only has `slightly_short` /
+  `too_short`. Harmless, but the example is unreachable through the API.
 
 ### P4 — when there is production data
 

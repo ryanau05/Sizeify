@@ -86,6 +86,15 @@ confirmed to fail against the pre-fix code:
   rejected, so a mistyped fit-preference field vanished without error.
 - `X-Forwarded-For` was only partially read, which behind some proxies let a
   client choose the address it was billed as.
+- Rate-limit records were discarded under memory pressure, which handed the
+  discarded client a fresh allowance — so flooding the limiter reset your own
+  throttle. New arrivals now share a budget instead.
+- A deployment that forgot to set the signing secret returned a server error
+  for every signed-in request, rather than a clear failure.
+- Signing up could report success while having created nothing, if any
+  database constraint other than the email one was violated.
+- Password hashing and fit-feedback entry are both bounded now, so neither can
+  be used to exhaust the server's memory or stall it.
 
 ### Infrastructure
 
@@ -94,7 +103,7 @@ confirmed to fail against the pre-fix code:
 - CI enforces the repository-layer boundary at lint time — route handlers
   cannot reach the database directly — plus a 90% coverage floor on the domain
   core, which currently sits at 99%.
-- 514 tests covering the whole surface, including an end-to-end test of the
+- 522 tests covering the whole surface, including an end-to-end test of the
   Phase 1 exit criterion whose expected numbers are worked out by hand rather
   than read back from the code.
 

@@ -5,7 +5,7 @@ Phase 1 of `PROJECT_PLAN.md` ("Backend core: schema, auth, closet CRUD," weeks 2
 **Phase 1 exit criterion (re-stated from the plan):** an integration test seeds a closet with five garments, calls the matching engine against a fixture `brand_product`, and asserts the recommendation contains size + confidence + fit notes + reference garments matching a hand-computed expectation.
 
 > **Status: all tickets complete (2026-09-10).** Delivered across migrations
-> `0001`–`0006`, 514 passing tests, 99% coverage on `api.domain`. Two
+> `0001`–`0006`, 522 passing tests, 99% coverage on `api.domain`. Two
 > pre-landing reviews are summarised in `PROJECT_PLAN.md` under Phase 1; the
 > first review's findings are closed in `TODOS.md`, and the second review's
 > six defects were fixed on the branch before the PR.

@@ -93,12 +93,13 @@ Exit criterion: a fresh clone + `make bootstrap` (or equivalent) gets a contribu
 Goal: a backend that can store a user's closet and run the matching engine in isolation.
 
 > **Status:** all 20 tickets in `PHASE_1_TICKETS.md` are delivered, and the exit
-> criterion passes as `apps/api/tests/integration/test_phase1_exit.py`. 514 tests,
+> criterion passes as `apps/api/tests/integration/test_phase1_exit.py`. 522 tests,
 > 99% coverage on `api.domain`, ruff/mypy/alembic clean. Migrations `0001`–`0006`.
 >
-> A second, specialist pre-landing review ran before the PR and found six
-> defects the first pass missed — all fixed on the branch, each with a
-> regression test confirmed to fail against the pre-fix code:
+> Two further reviews ran before the PR — a specialist pass and an
+> adversarial pass — finding thirteen defects between them that the first
+> review missed. All are fixed on the branch, each with a regression test
+> confirmed to fail against the pre-fix code. The ones worth knowing about:
 >
 > - **Migration `0003` could not apply to a fresh database.** The consent
 >   backfill bound an ISO *string* against a `timestamptz` column, so
@@ -118,6 +119,27 @@ Goal: a backend that can store a user's closet and run the matching engine in is
 >   column, so the model and migration `0005` disagreed.
 > - Auth request bodies accepted unknown fields while every other body
 >   forbade them, silently discarding a mistyped `stated_fit_preference`.
+> - **The migration test could have dropped the real database.** It derived
+>   its throwaway name with `rpartition("/")`, so for any `DATABASE_URL`
+>   carrying a query string — `?sslmode=require`, the norm on managed
+>   Postgres — the suffix landed in the query string and the URL still
+>   resolved to the real database, where the cycle test ran `downgrade base`
+>   with the destructive opt-in set and asserted green. Introduced by the
+>   fix for the `0003` bug above; caught by the adversarial pass.
+> - **Rate-limiter eviction was a rate-limit reset.** A bucket's content is
+>   spent budget, so evicting one restored that key to full capacity, and a
+>   throttled client could trigger its own eviction by minting keys. New
+>   keys past the cap now share an overflow bucket; nothing live is dropped.
+> - An unset `JWT_SECRET` 500'd every authenticated request, from inside
+>   pre-routing middleware where no exception handler could reach it.
+> - Signup treated *every* `IntegrityError` as "address taken", so any
+>   future constraint violation would have returned 202 having created
+>   nothing — indistinguishable, by design, from a taken address.
+> - Argon2 ran unbounded across anyio's 40-thread pool at 128 MiB each:
+>   5 GiB resident, reachable by one account through `DELETE /me`.
+> - Fit-signal creation was uncapped while `use_case` is free text, making
+>   `GET /closet/fit-profile` an event-loop stall an authenticated caller
+>   controls.
 >
 > The domain core (TKT-P1-11/12/14/15: `stretch`, `fit_profile`, `matching`,
 > `recommendation`) was originally built on the retired capstone demo branch
