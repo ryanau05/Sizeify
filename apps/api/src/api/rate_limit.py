@@ -49,14 +49,16 @@ No lock is needed, and adding one would only serialize the loop.
 
 from __future__ import annotations
 
-import hashlib
 import ipaddress
 import logging
 import math
 import time
+from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from re import Pattern
 
+from starlette.routing import compile_path
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
@@ -67,10 +69,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_CAPACITY = 10
 DEFAULT_WINDOW_SECONDS = 60
 
-# Prune idle buckets once the table passes this size, so a stream of
-# spoofed source addresses cannot grow the dict without bound. Well above
-# any plausible Phase 1 concurrent-client count, so pruning is rare.
-_PRUNE_THRESHOLD = 10_000
+# Hard ceiling on resident buckets. Past this, the oldest are evicted in
+# insertion order, so the table's size is bounded by this constant rather
+# than by how fast an attacker can mint keys. Well above any plausible
+# Phase 1 concurrent-client count, so honest traffic never reaches it.
+#
+# The earlier comment here said 10,000 was "well above any plausible
+# concurrent-client count, so pruning is rare" — a statement about honest
+# traffic that said nothing about an attacker, which is the only case that
+# matters for a limit whose job is to survive one.
+_MAX_BUCKETS = 10_000
 
 
 @dataclass
@@ -100,7 +108,9 @@ class TokenBucketLimiter:
         self._capacity = float(capacity)
         self._window_seconds = float(window_seconds)
         self._refill_per_second = self._capacity / self._window_seconds
-        self._buckets: dict[str, _Bucket] = {}
+        # Insertion-ordered so the oldest key is the cheapest to evict.
+        self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
+        self._last_prune = 0.0
 
     def acquire(self, key: str, *, now: float | None = None) -> float | None:
         """Spend one token for ``key``.
@@ -116,8 +126,7 @@ class TokenBucketLimiter:
         if bucket is None:
             bucket = _Bucket(tokens=self._capacity, updated_at=now)
             self._buckets[key] = bucket
-            if len(self._buckets) > _PRUNE_THRESHOLD:
-                self._prune(now)
+            self._prune(now)
         else:
             elapsed = max(0.0, now - bucket.updated_at)
             bucket.tokens = min(self._capacity, bucket.tokens + elapsed * self._refill_per_second)
@@ -136,17 +145,44 @@ class TokenBucketLimiter:
         return None
 
     def _prune(self, now: float) -> None:
-        """Drop buckets that have refilled to capacity.
+        """Keep the bucket table bounded, in amortized constant time.
 
-        A full bucket is indistinguishable from a bucket that has never
-        been used, so forgetting it loses no rate-limiting state.
+        Two things used to go wrong here, and they compounded.
+
+        *Nothing forced the table to shrink.* Only buckets idle for a full
+        window were dropped, so a flood of keys arriving faster than the
+        window evicted nothing and the table grew without limit. Age-based
+        pruning answers "is this bucket still interesting?", which is the
+        wrong question when the threat is volume.
+
+        *The scan ran per request.* Once past the threshold, every new key
+        rebuilt the whole dict — O(n) of synchronous work on the event loop,
+        for each of n arrivals, so the cost was quadratic in the flood.
+
+        Now the sweep runs at most once per window, and whatever it fails to
+        reclaim is made up by evicting in insertion order until the table is
+        back under ``_MAX_BUCKETS``. That ceiling holds regardless of key
+        freshness. Evicting a bucket forgets a partially-spent budget, which
+        is why the age sweep goes first: it reclaims genuinely idle keys, and
+        only a table still over the cap afterwards — that is, one under active
+        flood — starts dropping live state. Under that flood the alternative
+        is unbounded memory, and the evicted keys are overwhelmingly the
+        attacker's own.
         """
-        full_after = self._window_seconds
-        self._buckets = {
-            key: bucket
-            for key, bucket in self._buckets.items()
-            if now - bucket.updated_at < full_after
-        }
+        if now - self._last_prune >= self._window_seconds:
+            self._last_prune = now
+            # A bucket idle for a full window has refilled to capacity, and a
+            # full bucket is indistinguishable from one that never existed —
+            # so forgetting it loses no rate-limiting state.
+            for key in [
+                key
+                for key, bucket in self._buckets.items()
+                if now - bucket.updated_at >= self._window_seconds
+            ]:
+                del self._buckets[key]
+
+        while len(self._buckets) > _MAX_BUCKETS:
+            self._buckets.popitem(last=False)
 
     def reset(self) -> None:
         """Forget all buckets. Test-support only."""
@@ -181,7 +217,17 @@ class RateLimitMiddleware:
         self._key_by_bearer = key_by_bearer
         # Bucket keys are per-endpoint, and this is the set of endpoints that
         # actually exist. Anything else collapses to one shared key.
-        self._known_paths = frozenset(known_paths)
+        # Route *templates*, compiled so a concrete request path can be
+        # matched back to the template it belongs to. Storing the raw strings
+        # and testing ``scope["path"] in known_paths`` looked equivalent and
+        # was not: the strings FastAPI exposes are uncompiled templates, so
+        # "/closet/garments/{garment_id}" never equalled
+        # "/closet/garments/<a real uuid>" and every parameterized route fell
+        # into "<unrouted>" together. That failed safe (one shared, stricter
+        # bucket) but silently voided the per-endpoint separation below.
+        self._known_routes: tuple[tuple[Pattern[str], str], ...] = tuple(
+            (compile_path(template)[0], template) for template in known_paths
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or not scope["path"].startswith(self._path_prefixes):
@@ -219,31 +265,68 @@ class RateLimitMiddleware:
         every request behind a load balancer into a single bucket, which is
         worse than no limiter at all.
         """
-        path = scope["path"] if scope["path"] in self._known_paths else "<unrouted>"
-        return f"{self._principal(scope)}:{path}"
+        return f"{self._principal(scope)}:{self._route_template(scope['path'])}"
+
+    def _route_template(self, path: str) -> str:
+        """The route template ``path`` resolves to, or ``"<unrouted>"``.
+
+        Bucketing on the template rather than the concrete path keeps
+        ``/closet/garments/{id}`` one bucket per client instead of one per
+        garment, which is the same unbounded-key-space problem ``<unrouted>``
+        exists to prevent.
+        """
+        for pattern, template in self._known_routes:
+            if pattern.match(path):
+                return template
+        return "<unrouted>"
 
     def _principal(self, scope: Scope) -> str:
-        """Who to bill: the bearer credential where there is one, else the IP.
+        """Who to bill: the *verified* token subject where there is one, else the IP.
 
-        Hashed rather than stored raw — a bucket key ends up in memory dumps
-        and, if this is ever logged, in the log store. A token-shaped secret
-        should not be sitting in either.
+        This used to key on ``sha256(raw Authorization header)`` on the
+        reasoning that hashing avoided crypto on the hot path and a forged
+        token would be rejected downstream anyway. Both halves were true and
+        the conclusion was still wrong: the middleware runs *before* routing,
+        so "rejected downstream" happens after the bucket has already been
+        minted. Keying on bytes the caller chooses means the caller chooses
+        the bucket — send ``Bearer <random>`` per request and every request is
+        a fresh bucket that starts at full capacity. Measured before this
+        change: 50 requests from one address with a rotating forged token were
+        throttled 0 times and created 50 buckets, while the same 50 with a
+        fixed token were throttled 45 times and created 1.
 
-        The hash is of the raw token, not the ``sub`` claim, so this needs no
-        signature verification and does no crypto work on the hot path. The
-        cost is that a user holding two access tokens gets two buckets, which
-        is a rounding error against a per-minute budget, and a forged token is
-        still rejected downstream by ``deps.get_current_user``.
+        So the token is decoded and its signature checked. That is one HMAC
+        verify — microseconds, against a budget measured in hundreds of
+        milliseconds — and it buys the property the bucket key actually needs:
+        an attacker cannot mint keys, because they cannot forge ``sub``
+        without the signing secret. Anything that does not decode falls back
+        to the peer address, so unauthenticated floods stay bounded by the
+        address space rather than by the attacker's imagination.
+
+        Keying on ``sub`` rather than the token also fixes a smaller thing:
+        a user holding two access tokens now shares one budget instead of
+        getting two.
         """
         if not self._key_by_bearer:
             return self._client_ip(scope)
 
-        for raw_name, raw_value in scope.get("headers", ()):
-            if raw_name == b"authorization":
-                scheme, _, token = raw_value.decode("latin-1").partition(" ")
-                if scheme.lower() == "bearer" and token.strip():
-                    digest = hashlib.sha256(token.strip().encode("utf-8")).hexdigest()
-                    return f"bearer:{digest[:32]}"
+        # Imported here, not at module scope: ``api.config`` reads this
+        # module's DEFAULT_* constants, and ``api.auth.jwt`` reads settings,
+        # so a top-level import would close the loop
+        # config -> rate_limit -> auth.jwt -> config.
+        from api.auth import jwt as auth_jwt
+
+        token = _bearer_token(scope)
+        if token is not None:
+            try:
+                claims = auth_jwt.decode(token)
+            except auth_jwt.JwtError:
+                # Expired, forged, malformed, or signed with a retired key.
+                # It will 401 downstream; bill the address meanwhile so the
+                # attempt still costs the sender something.
+                pass
+            else:
+                return f"user:{claims.user_id}"
         # Unauthenticated request to an authenticated surface: it will 401, but
         # bill the address so a flood of them is still bounded.
         return self._client_ip(scope)
@@ -313,10 +396,33 @@ def _in_networks(address: str, networks: Sequence[_Network]) -> bool:
     return any(parsed in network for network in networks)
 
 
+def _bearer_token(scope: Scope) -> str | None:
+    """The ``Authorization: Bearer`` value, or ``None`` if absent/other scheme."""
+    for raw_name, raw_value in scope.get("headers", ()):
+        if raw_name == b"authorization":
+            header: str = raw_value.decode("latin-1")
+            scheme, _, token = header.partition(" ")
+            if scheme.lower() == "bearer" and token.strip():
+                return token.strip()
+    return None
+
+
 def _forwarded_for(scope: Scope) -> list[str]:
-    """``X-Forwarded-For`` entries, left to right, as sent."""
+    """``X-Forwarded-For`` entries, left to right, as sent.
+
+    Every matching header line is concatenated, not just the first. HTTP
+    permits a field to repeat, and proxies split on which shape they emit:
+    nginx's ``$proxy_add_x_forwarded_for`` and AWS ALB comma-append into the
+    existing line, but others append a *separate* line. Reading only the first
+    line under the latter meant the client's own line won, and since the trust
+    walk runs right-to-left over whatever this returns, an attacker could hand
+    us a list whose rightmost entry was their own — re-opening the spoof that
+    ``_client_ip`` exists to close. Concatenating in header order preserves
+    the append-only ordering the walk depends on.
+    """
+    entries: list[str] = []
     for raw_name, raw_value in scope.get("headers", ()):
         if raw_name == b"x-forwarded-for":
             decoded = raw_value.decode("latin-1")
-            return [part.strip() for part in decoded.split(",") if part.strip()]
-    return []
+            entries.extend(part.strip() for part in decoded.split(",") if part.strip())
+    return entries

@@ -25,12 +25,14 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from _factories import make_owned_garment, make_user
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import jwt as auth_jwt
 from api.config import get_settings
+from api.deps import get_session
+from api.main import create_app
 from api.models import GarmentCategory, OwnedGarment
 from api.repositories import GarmentCategoryRepository
 from api.repositories.refresh_tokens import RefreshTokenRepository
@@ -698,3 +700,135 @@ async def test_unseeded_category_is_a_500_that_names_the_fix(
 
     assert response.status_code == 500
     assert "api.seeds.garment_categories" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# The authenticated-surface rate limiter, end to end.
+#
+# The middleware over ``/closet/*`` and ``/me`` had no HTTP-level test at all:
+# the unit tests built a middleware with ``key_by_bearer=False`` and then set
+# the private attribute by hand, so they exercised ``_principal`` without ever
+# exercising the wiring. Deleting the whole second ``add_middleware`` block
+# from ``create_app`` left the suite green, which is how a limiter that could
+# be bypassed by rotating the token shipped unnoticed.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def user_throttled_client(
+    monkeypatch: pytest.MonkeyPatch, db_session: AsyncSession
+) -> AsyncIterator[AsyncClient]:
+    """Client whose app was built with a 2-request authenticated budget.
+
+    Built here rather than via the shared ``app`` fixture for the same reason
+    as ``throttled_client`` in ``test_routes_auth``: the limiter is
+    constructed inside ``create_app``, so the env var must be set first.
+    """
+    monkeypatch.setenv("USER_RATE_LIMIT_CAPACITY", "2")
+    monkeypatch.setenv("USER_RATE_LIMIT_WINDOW_SECONDS", "60")
+    get_settings.cache_clear()
+    app = create_app()
+
+    async def _override_get_session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as throttled:
+            yield throttled
+    finally:
+        app.dependency_overrides.clear()
+
+
+async def test_closet_reads_are_rate_limited(
+    user_throttled_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The authenticated surface throttles at all — nothing asserted this."""
+    headers = await auth_headers(db_session)
+
+    first = await user_throttled_client.get(GARMENTS, headers=headers)
+    second = await user_throttled_client.get(GARMENTS, headers=headers)
+    third = await user_throttled_client.get(GARMENTS, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 429
+    # capacity 2 over a 60s window refills one token every 30s.
+    assert third.headers["retry-after"] == "30"
+
+
+async def test_the_me_prefix_is_throttled_too(
+    user_throttled_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """``/me`` is registered as a bare prefix, not ``/me/`` — easy to get wrong,
+    and the GDPR export is the most expensive thing behind it."""
+    headers = await auth_headers(db_session)
+
+    for _ in range(2):
+        await user_throttled_client.get("/me/export", headers=headers)
+    third = await user_throttled_client.get("/me/export", headers=headers)
+
+    assert third.status_code == 429
+
+
+async def test_rotating_the_bearer_token_does_not_escape_the_budget(
+    user_throttled_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The bypass. This is the test whose absence let it ship.
+
+    The limiter used to bucket on a SHA-256 of the raw Authorization header,
+    so the *caller* chose the bucket: a fresh token string meant a fresh
+    bucket, starting at full capacity. No account was needed, because the
+    middleware runs before routing and the 401 arrives too late to matter.
+    Measured against the pre-fix code, 50 requests from one address with a
+    rotating forged token were throttled 0 times.
+    """
+    statuses = [
+        (
+            await user_throttled_client.get(
+                GARMENTS, headers={"Authorization": f"Bearer forged-{i}"}
+            )
+        ).status_code
+        for i in range(10)
+    ]
+
+    assert 429 in statuses, "rotating the bearer value bypassed the limiter"
+
+
+async def test_two_users_on_one_connection_do_not_share_a_budget(
+    user_throttled_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The reason for keying on the credential rather than the address: two
+    users behind one NAT must not exhaust each other."""
+    alice = await auth_headers(db_session, email="alice-throttle@example.com")
+    bob = await auth_headers(db_session, email="bob-throttle@example.com")
+
+    for _ in range(3):
+        await user_throttled_client.get(GARMENTS, headers=alice)
+    bobs_turn = await user_throttled_client.get(GARMENTS, headers=bob)
+
+    assert bobs_turn.status_code == 200, "Alice's flood locked Bob out"
+
+
+async def test_parameterized_routes_get_their_own_bucket(
+    user_throttled_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Exhausting the list endpoint must not also block a delete.
+
+    ``known_paths`` holds route *templates*, so comparing them against the
+    concrete request path meant every parameterized route collapsed into the
+    shared ``<unrouted>`` bucket together.
+    """
+    headers = await auth_headers(db_session)
+    created = await user_throttled_client.post(GARMENTS, json=garment_body(), headers=headers)
+    assert created.status_code == 201
+    garment_id = created.json()["id"]
+
+    for _ in range(3):
+        await user_throttled_client.get(GARMENTS, headers=headers)
+
+    deleted = await user_throttled_client.delete(f"{GARMENTS}/{garment_id}", headers=headers)
+
+    assert deleted.status_code == 204, "the list bucket swallowed the delete route"

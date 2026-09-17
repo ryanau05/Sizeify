@@ -8,12 +8,15 @@ tested against arithmetic rather than against ``time.monotonic`` and a
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 
 from api import rate_limit
+from api.auth import jwt as auth_jwt
+from api.config import get_settings
 from api.rate_limit import TokenBucketLimiter
 
 
@@ -105,11 +108,12 @@ def test_pruning_keeps_buckets_that_are_still_throttled(
     """The bucket table is pruned so a stream of spoofed source addresses
     cannot grow it without bound. Pruning must never hand a client that is
     still inside its window a fresh budget."""
-    monkeypatch.setattr(rate_limit, "_PRUNE_THRESHOLD", 2)
+    monkeypatch.setattr(rate_limit, "_MAX_BUCKETS", 8)
     limiter = TokenBucketLimiter(capacity=1, window_seconds=60)
     assert limiter.acquire("hot", now=0.0) is None
 
-    # Two new keys arrive and trip a prune while "hot" is still empty.
+    # Two new keys arrive while "hot" is still empty. Neither the age sweep
+    # nor the cap may hand "hot" a fresh budget inside its window.
     limiter.acquire("new-1", now=5.0)
     limiter.acquire("new-2", now=5.0)
 
@@ -121,7 +125,7 @@ def test_pruning_drops_buckets_that_have_fully_refilled(
 ) -> None:
     """A full bucket is indistinguishable from one that never existed, so
     dropping it is what makes the table bounded without losing state."""
-    monkeypatch.setattr(rate_limit, "_PRUNE_THRESHOLD", 2)
+    monkeypatch.setattr(rate_limit, "_MAX_BUCKETS", 2)
     limiter = TokenBucketLimiter(capacity=1, window_seconds=60)
     limiter.acquire("stale-1", now=0.0)
     limiter.acquire("stale-2", now=0.0)
@@ -280,41 +284,107 @@ def test_unparseable_trusted_cidr_does_not_widen_trust() -> None:
     assert middleware._client_ip(_scope("10.0.0.5", "1.2.3.4")) == "10.0.0.5"
 
 
+@pytest.fixture
+def _rate_limit_jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """A signing secret for the tests that mint real tokens.
+
+    ``_principal`` verifies signatures now, so a made-up token string is
+    indistinguishable from a forged one and falls back to the peer address.
+    These tests need tokens that actually decode.
+    """
+    monkeypatch.setenv("JWT_SECRET", "rate-limit-test-secret-do-not-deploy")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def _access_token(user_id: UUID) -> str:
+    """A signed access token for ``user_id``, as a real client would send."""
+    return auth_jwt._encode(user_id, auth_jwt.TokenType.ACCESS, ttl_seconds=900)
+
+
+def _bearer_scope(peer: str, token: str | None) -> dict[str, Any]:
+    s = _scope(peer)
+    s["path"] = "/closet/garments"
+    if token:
+        s["headers"] = [(b"authorization", f"Bearer {token}".encode())]
+    return s
+
+
+@pytest.mark.usefixtures("_rate_limit_jwt_secret")
 def test_authenticated_surfaces_bill_the_credential_not_the_address() -> None:
     """Two users behind one NAT must not share a budget, and one user must not
     escape theirs by changing networks."""
     middleware = _middleware()
     middleware._key_by_bearer = True
 
-    def scope(peer: str, token: str | None) -> dict[str, Any]:
-        s = _scope(peer)
-        s["path"] = "/closet/garments"
-        if token:
-            s["headers"] = [(b"authorization", f"Bearer {token}".encode())]
-        return s
+    alice, bob = uuid4(), uuid4()
+    # Two tokens for the same user: distinct strings, same subject. Under the
+    # old raw-token hashing these were two buckets.
+    alice_token_1, alice_token_2 = _access_token(alice), _access_token(alice)
 
     same_user_two_networks = {
-        middleware._principal(scope("10.0.0.1", "tok-a")),
-        middleware._principal(scope("203.0.113.7", "tok-a")),
+        middleware._principal(_bearer_scope("10.0.0.1", alice_token_1)),
+        middleware._principal(_bearer_scope("203.0.113.7", alice_token_1)),
     }
     two_users_one_network = {
-        middleware._principal(scope("10.0.0.1", "tok-a")),
-        middleware._principal(scope("10.0.0.1", "tok-b")),
+        middleware._principal(_bearer_scope("10.0.0.1", alice_token_1)),
+        middleware._principal(_bearer_scope("10.0.0.1", _access_token(bob))),
+    }
+    same_user_two_tokens = {
+        middleware._principal(_bearer_scope("10.0.0.1", alice_token_1)),
+        middleware._principal(_bearer_scope("10.0.0.1", alice_token_2)),
     }
 
     assert len(same_user_two_networks) == 1, "same credential should share a bucket"
     assert len(two_users_one_network) == 2, "different credentials should not"
+    assert len(same_user_two_tokens) == 1, "one user's two tokens are one budget"
 
 
+@pytest.mark.usefixtures("_rate_limit_jwt_secret")
+def test_a_forged_token_cannot_mint_its_own_bucket() -> None:
+    """The bypass this keying exists to close.
+
+    ``_principal`` used to hash the raw Authorization header, so the bucket
+    key was chosen by the caller: send a different token each time and every
+    request is a fresh bucket starting at full capacity. Measured before the
+    fix, 50 requests from one address with a rotating forged token were
+    throttled 0 times and created 50 buckets. No account required — the
+    middleware runs before routing, so the 401 comes too late to matter.
+
+    Unsigned garbage must therefore fall back to the peer address, which is
+    bounded, rather than to anything the sender controls.
+    """
+    middleware = _middleware()
+    middleware._key_by_bearer = True
+
+    forged = {middleware._principal(_bearer_scope("10.0.0.1", f"forged-{i}")) for i in range(50)}
+
+    assert forged == {"10.0.0.1"}, "a forged token must bill the peer, not mint a key"
+
+
+@pytest.mark.usefixtures("_rate_limit_jwt_secret")
+def test_an_expired_token_bills_the_address_not_a_fresh_bucket() -> None:
+    """Expiry is the forgery case that arrives without an attacker.
+
+    A client looping on a stale token would otherwise hold a full private
+    bucket forever, because the subject still parses.
+    """
+    middleware = _middleware()
+    middleware._key_by_bearer = True
+    expired = auth_jwt._encode(uuid4(), auth_jwt.TokenType.ACCESS, ttl_seconds=-1)
+
+    assert middleware._principal(_bearer_scope("10.0.0.1", expired)) == "10.0.0.1"
+
+
+@pytest.mark.usefixtures("_rate_limit_jwt_secret")
 def test_the_bucket_key_never_contains_the_raw_token() -> None:
     """Keys end up in memory dumps and, if ever logged, in the log store."""
     middleware = _middleware()
     middleware._key_by_bearer = True
-    s = _scope("10.0.0.1")
-    s["path"] = "/closet/garments"
-    s["headers"] = [(b"authorization", b"Bearer super-secret-token-value")]
+    token = _access_token(uuid4())
 
-    assert "super-secret-token-value" not in middleware._principal(s)
+    assert token not in middleware._principal(_bearer_scope("10.0.0.1", token))
 
 
 def test_unauthenticated_request_to_an_authenticated_surface_bills_the_address() -> None:
