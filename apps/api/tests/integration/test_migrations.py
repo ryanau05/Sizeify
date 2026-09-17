@@ -31,6 +31,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 import pytest_asyncio
+from _keys import TEST_JWT_SECRET
 from sqlalchemy.engine import URL, make_url
 
 from api.config import get_settings
@@ -74,7 +75,7 @@ def _alembic(command: str, *args: str, url: str, allow_destructive: bool = False
         "DATABASE_URL": url,
         # ``env.py`` builds the URL through Settings, which caches; a fresh
         # process is the simplest way to guarantee it reads ours.
-        "JWT_SECRET": "migration-test-secret",
+        "JWT_SECRET": TEST_JWT_SECRET,
     }
     if allow_destructive:
         env["ALEMBIC_ALLOW_DESTRUCTIVE_DOWNGRADE"] = "1"

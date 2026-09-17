@@ -22,6 +22,7 @@ from uuid import uuid4
 
 import pytest
 from _factories import make_user
+from _keys import ALTERNATE_JWT_SECRET, TEST_JWT_SECRET
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import jwt as auth_jwt
@@ -43,7 +44,7 @@ def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # Non-empty so ``_secret()`` doesn't raise; value is irrelevant past
     # that. Set via env var so the same ``Settings`` resolution path the
     # app uses in production exercises here too.
-    monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
     get_settings.cache_clear()
     yield
 
@@ -140,7 +141,7 @@ def test_decode_raises_on_wrong_secret(
     # Length ≥32 bytes — pyjwt's HS256 emits an InsecureKeyLengthWarning
     # otherwise, which would clutter the test output without flagging a
     # real bug.
-    monkeypatch.setenv("JWT_SECRET", "a-completely-different-32+-byte-secret")
+    monkeypatch.setenv("JWT_SECRET", ALTERNATE_JWT_SECRET)
     get_settings.cache_clear()
     with pytest.raises(InvalidTokenError):
         decode(tok)

@@ -26,6 +26,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from _factories import make_owned_garment, make_user
+from _keys import TEST_JWT_SECRET
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,7 +48,7 @@ GARMENTS = "/closet/garments"
 
 @pytest.fixture(autouse=True)
 def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
     get_settings.cache_clear()
     yield
 

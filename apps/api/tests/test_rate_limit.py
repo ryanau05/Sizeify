@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from _keys import TEST_JWT_SECRET
 
 from api import rate_limit
 from api.auth import jwt as auth_jwt
@@ -292,7 +293,7 @@ def _rate_limit_jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     indistinguishable from a forged one and falls back to the peer address.
     These tests need tokens that actually decode.
     """
-    monkeypatch.setenv("JWT_SECRET", "rate-limit-test-secret-do-not-deploy")
+    monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

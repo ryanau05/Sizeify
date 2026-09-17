@@ -25,6 +25,7 @@ import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 from _factories import TEST_PASSWORD, make_user
+from _keys import TEST_JWT_SECRET
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -45,7 +46,7 @@ PASSWORD = "Str0ng-Passphrase"
 
 @pytest.fixture(autouse=True)
 def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
     get_settings.cache_clear()
     yield
 

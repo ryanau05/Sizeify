@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 import pytest
 from _api import signup_and_login
 from _factories import make_user
+from _keys import ALTERNATE_JWT_SECRET, TEST_JWT_SECRET
 from fastapi import FastAPI
 from httpx import AsyncClient
 from pydantic import BaseModel
@@ -33,7 +34,7 @@ PROTECTED = "/_test/protected"
 
 @pytest.fixture(autouse=True)
 def _jwt_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
     get_settings.cache_clear()
     yield
 
@@ -206,10 +207,10 @@ async def test_token_signed_with_another_secret_is_401(
     client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     user = await make_user(db_session)
-    monkeypatch.setenv("JWT_SECRET", "a-different-secret-of-a-respectable-length")
+    monkeypatch.setenv("JWT_SECRET", ALTERNATE_JWT_SECRET)
     get_settings.cache_clear()
     foreign = await issue_access_token(db_session, user.id)
-    monkeypatch.setenv("JWT_SECRET", "test-secret-do-not-deploy-anywhere")
+    monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
     get_settings.cache_clear()
 
     response = await client.get(PROTECTED, headers=bearer(foreign))
