@@ -527,3 +527,35 @@ async def test_out_of_range_magnitude_is_422_not_500(
     )
 
     assert response.status_code == 422
+
+
+async def test_fit_signals_are_capped_per_garment(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Signal creation is bounded, like garment creation always was.
+
+    ``use_case`` is free text and ``build_fit_profile`` rebuilds the whole
+    per-dimension posterior once per distinct use case, synchronously on the
+    event loop, with ``GET /closet/fit-profile`` running it per request.
+    Uncapped, an authenticated caller could accumulate enough distinct use
+    cases on one garment to park the worker: measured at 0.2 ms for a
+    realistic closet and 314 ms for one garment carrying 2,000 distinct use
+    cases, against PRD §9.2's 100 ms budget.
+    """
+    monkeypatch.setenv("MAX_FIT_SIGNALS_PER_GARMENT", "3")
+    get_settings.cache_clear()
+
+    headers, garment_id = await authed_garment(client, db_session)
+    url = signals_url(garment_id)
+
+    def body(use_case: str) -> dict[str, Any]:
+        return {"dimension": "chest", "verdict": "preferred", "use_case": use_case}
+
+    for i in range(3):
+        accepted = await client.post(url, json=body(f"use-case-{i}"), headers=headers)
+        assert accepted.status_code == 201, accepted.text
+
+    refused = await client.post(url, json=body("one-too-many"), headers=headers)
+
+    assert refused.status_code == 409
+    assert "fit signals" in refused.json()["detail"]

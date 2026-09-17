@@ -37,7 +37,6 @@ the transaction for exactly that reason.
 import logging
 from typing import Annotated, Any
 
-import anyio.to_thread
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 
@@ -120,9 +119,7 @@ async def _verify_credentials(user: User | None, submitted_password: str) -> Use
     for the same reason; 250 ms of hashing is the larger offender.
     """
     candidate_hash = user.password_hash if user is not None else _DUMMY_PASSWORD_HASH
-    matched = await anyio.to_thread.run_sync(
-        auth_password.verify, submitted_password, candidate_hash
-    )
+    matched = await auth_password.verify_async(submitted_password, candidate_hash)
     if user is None or not matched:
         # No email in the payload: a failed-login log that records the address
         # tried is a credential-stuffing target list sitting in the log store
@@ -203,7 +200,7 @@ async def signup(
     # It also runs on *both* paths, before we know which one we are on, so the
     # ~250 ms of hashing dominates the response time and the extra INSERT on
     # the create path is not a timing side channel.
-    password_hash = await anyio.to_thread.run_sync(auth_password.hash, body.password)
+    password_hash = await auth_password.hash_async(body.password)
 
     try:
         async with transaction(users.session):
@@ -272,8 +269,8 @@ async def login(
         # Login is the only moment the plaintext exists, so it is the only
         # place a hash produced with since-raised parameters can be upgraded.
         # Same transaction as the token issue: either both land or neither.
-        if await anyio.to_thread.run_sync(auth_password.needs_rehash, user.password_hash):
-            upgraded = await anyio.to_thread.run_sync(auth_password.hash, body.password)
+        if await auth_password.needs_rehash_async(user.password_hash):
+            upgraded = await auth_password.hash_async(body.password)
             await users.update(user.id, password_hash=upgraded)
             logger.info("auth.password.rehashed", extra={"user_id": str(user.id)})
 

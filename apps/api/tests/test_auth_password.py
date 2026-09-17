@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import time
 
+import anyio
 import pytest
 
 from api.auth import password
+from api.auth import password as auth_password
 
 
 def test_hash_is_unique_per_call() -> None:
@@ -110,3 +112,42 @@ def test_needs_rehash_is_false_for_an_unparseable_hash() -> None:
     """Migration 0003's locked sentinel among them: re-hashing something that
     never verified would be meaningless."""
     assert password.needs_rehash("!locked-no-password-set") is False
+
+
+async def test_concurrent_hashing_is_bounded() -> None:
+    """Argon2 concurrency is a memory question, not a CPU one.
+
+    Each operation holds ``MEMORY_COST_KIB`` (128 MiB) for its duration, and
+    anyio's default thread pool is 40 wide — so unbounded hashing peaks around
+    5 GiB resident. One account can reach that alone: ``DELETE /me`` verifies a
+    password and sits behind a 120/minute budget, so a single valid token
+    saturates the pool and OOM-kills a small container.
+
+    Asserts the ceiling actually binds, rather than that the limiter object
+    exists.
+    """
+    in_flight = 0
+    peak = 0
+    real_verify = auth_password.verify
+
+    def counting_verify(password: str, hash_: str) -> bool:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            return real_verify(password, hash_)
+        finally:
+            in_flight -= 1
+
+    hashed = auth_password.hash("concurrency-probe")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(auth_password, "verify", counting_verify)
+        async with anyio.create_task_group() as tg:
+            for _ in range(auth_password.MAX_CONCURRENT_HASHES * 3):
+                tg.start_soon(auth_password.verify_async, "concurrency-probe", hashed)
+
+    assert peak > 1, "nothing ran concurrently — the test is not exercising the bound"
+    assert peak <= auth_password.MAX_CONCURRENT_HASHES, (
+        f"{peak} argon2 operations ran at once, "
+        f"~{peak * auth_password.MEMORY_COST_KIB // 1024} MiB resident"
+    )

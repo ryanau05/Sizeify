@@ -19,6 +19,21 @@ class FitSignalRepository(Repository[FitSignal, UUID]):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session, FitSignal)
 
+    async def count_for_garment(self, owned_garment_id: UUID) -> int:
+        """How many fit signals one garment carries.
+
+        Backs the per-garment ceiling in ``create_fit_signal``. A COUNT rather
+        than ``len(list_...)`` for the same reason the closet ceiling uses one:
+        the number is all the caller wants, and it is served by
+        ``ix_fit_signal_owned_garment_id``.
+        """
+        result = await self.session.execute(
+            sa.select(sa.func.count())
+            .select_from(FitSignal)
+            .where(FitSignal.owned_garment_id == owned_garment_id)
+        )
+        return result.scalar_one()
+
     async def list_for_user(
         self,
         user_id: UUID,

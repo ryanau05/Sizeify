@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     #: create endpoint is not an unbounded row-creation primitive.
     max_closet_garments: int = 500
 
+    # Ceiling on fit signals per garment. Garments were capped from the start;
+    # signals were not, and ``use_case`` is free text, so an authenticated
+    # caller could accumulate unbounded distinct use cases on one garment.
+    # ``build_fit_profile`` rebuilds the per-dimension posterior once per
+    # distinct use case, synchronously on the event loop, and
+    # ``GET /closet/fit-profile`` runs it per request: measured at 0.2 ms for a
+    # realistic 5-garment closet but 314 ms for one garment carrying 2,000
+    # distinct use cases, against PRD §9.2's 100 ms budget. 200 is far above
+    # any real garment's feedback history.
+    max_fit_signals_per_garment: int = 200
+
     # Comma-separated CIDRs of load balancers / ingress allowed to set
     # ``X-Forwarded-For``. Empty by default, which means the rate limiter
     # trusts nothing and keys on the TCP peer.

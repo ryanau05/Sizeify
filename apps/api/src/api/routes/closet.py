@@ -96,6 +96,13 @@ _NOT_FOUND_RESPONSE: dict[int | str, dict[str, Any]] = {
     }
 }
 
+_SIGNALS_FULL_RESPONSE: dict[int | str, dict[str, Any]] = {
+    status.HTTP_409_CONFLICT: {
+        "model": ErrorDetail,
+        "description": "This garment already holds as many fit signals as we keep.",
+    }
+}
+
 _CLOSET_FULL_RESPONSE: dict[int | str, dict[str, Any]] = {
     status.HTTP_409_CONFLICT: {
         "model": ErrorDetail,
@@ -382,6 +389,17 @@ async def create_fit_signal(
 
     category = await _load_category(garment.category_id, categories)
     _validate_dimension(body.dimension, category)
+
+    settings = get_settings()
+    recorded = await signals.count_for_garment(garment.id)
+    if recorded >= settings.max_fit_signals_per_garment:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This garment already has {settings.max_fit_signals_per_garment} "
+                "fit signals, which is as many as we keep."
+            ),
+        )
 
     async with transaction(signals.session):
         signal = await signals.create(

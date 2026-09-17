@@ -37,7 +37,6 @@ the worst way for this to break.
 import logging
 from datetime import UTC, datetime
 
-import anyio.to_thread
 from fastapi import APIRouter, HTTPException, status
 
 from api.auth import password as auth_password
@@ -132,7 +131,7 @@ async def delete_me(
     # know the password is what distinguishes the account's owner from anyone
     # holding a token that leaked. Verified off the event loop for the same
     # reason login is (argon2 is ~75-250 ms of CPU).
-    if not await anyio.to_thread.run_sync(auth_password.verify, body.password, user.password_hash):
+    if not await auth_password.verify_async(body.password, user.password_hash):
         logger.warning("me.account.erase_denied", extra={"user_id": str(user.id)})
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
