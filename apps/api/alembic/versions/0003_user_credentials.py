@@ -38,6 +38,7 @@ TKT-P1-07 landed):
 
 import os
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 import sqlalchemy as sa
 from alembic import op
@@ -70,7 +71,13 @@ LOCKED_PASSWORD_HASH = "!locked-no-password-set"
 # Obviously not a real consent timestamp: this product did not exist in 1970.
 # Anything at this instant was manufactured by this migration, never given by
 # a user.
-SYNTHETIC_CONSENT_AT = "1970-01-01T00:00:00+00:00"
+#
+# A ``datetime``, not the ISO string it reads as. SQLAlchemy infers a bind's
+# type from its Python value, so a ``str`` here is sent as ``$1::VARCHAR`` and
+# Postgres refuses to assign VARCHAR to ``timestamptz`` without a cast — the
+# whole migration aborts on a fresh database. The column type is pinned on the
+# bindparam below for the same reason.
+SYNTHETIC_CONSENT_AT = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def upgrade() -> None:
@@ -90,7 +97,9 @@ def upgrade() -> None:
         sa.text(
             'UPDATE "user" SET privacy_consent_accepted_at = :synthetic '
             "WHERE privacy_consent_accepted_at IS NULL"
-        ).bindparams(synthetic=SYNTHETIC_CONSENT_AT)
+        ).bindparams(
+            sa.bindparam("synthetic", SYNTHETIC_CONSENT_AT, type_=sa.DateTime(timezone=True))
+        )
     )
 
     op.alter_column("user", "password_hash", nullable=False)
