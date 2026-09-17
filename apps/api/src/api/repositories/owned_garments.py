@@ -65,6 +65,24 @@ class OwnedGarmentRepository(Repository[OwnedGarment, UUID]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def count_for_user(self, user_id: UUID) -> int:
+        """How many live garments the user has.
+
+        Exists so the closet-ceiling check does not have to hydrate the whole
+        closet to call ``len()`` on it — that pulled up to
+        ``max_closet_garments`` full rows, each with a JSONB measurements blob
+        and a text array, over the wire on every single create, and got more
+        expensive exactly as the user approached the limit. The partial index
+        ``ix_owned_garment_user_id_active`` serves this directly.
+        """
+        result = await self.session.execute(
+            sa.select(sa.func.count())
+            .select_from(OwnedGarment)
+            .where(OwnedGarment.user_id == user_id)
+            .where(OwnedGarment.deleted_at.is_(None))
+        )
+        return result.scalar_one()
+
     async def get_for_user(
         self,
         id: UUID,

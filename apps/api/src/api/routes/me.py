@@ -42,6 +42,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from api.auth import password as auth_password
 from api.deps import (
+    RATE_LIMITED_RESPONSE,
     UNAUTHORIZED_RESPONSE,
     CurrentUser,
     FitSignalRepositoryDep,
@@ -64,7 +65,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/me", tags=["me"])
 
 
-@router.get("/export", responses={**UNAUTHORIZED_RESPONSE})
+@router.get("/export", responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE})
 async def export(
     user: CurrentUser,
     garments: OwnedGarmentRepositoryDep,
@@ -96,7 +97,11 @@ async def export(
     )
 
 
-@router.delete("", status_code=status.HTTP_204_NO_CONTENT, responses={**UNAUTHORIZED_RESPONSE})
+@router.delete(
+    "",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE},
+)
 async def delete_me(
     body: AccountDeleteRequest,
     user: CurrentUser,

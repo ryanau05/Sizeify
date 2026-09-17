@@ -16,7 +16,8 @@ settings on every call, so the env var is enough.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,10 +30,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import jwt as auth_jwt
+from api.auth import password as auth_password
 from api.config import get_settings
 from api.deps import get_session
 from api.main import create_app
 from api.models import RefreshToken, User
+from api.repositories.refresh_tokens import RefreshTokenRepository
 from api.repositories.users import UserRepository
 
 CONSENT_AT = "2026-09-09T10:30:00Z"
@@ -68,6 +71,33 @@ def signup_body(**overrides: Any) -> dict[str, Any]:
     }
     body.update(overrides)
     return body
+
+
+# --- call sites that do argon2 work, for the off-loop test below ----------
+
+
+async def _signup_request(client: AsyncClient, session: AsyncSession) -> None:
+    """Hashes the new password."""
+    await client.post("/auth/signup", json=signup_body(email="offloop-signup@example.com"))
+
+
+async def _login_request(client: AsyncClient, session: AsyncSession) -> None:
+    """Verifies the stored hash, and may re-hash on a parameter upgrade."""
+    user = await make_user(session, email="offloop-login@example.com")
+    await client.post("/auth/login", json={"email": user.email, "password": TEST_PASSWORD})
+
+
+async def _delete_me_request(client: AsyncClient, session: AsyncSession) -> None:
+    """Re-authenticates before erasing the account — the call site the old
+    source-text assertion never looked at."""
+    user = await make_user(session, email="offloop-delete@example.com")
+    access, _ = await auth_jwt.issue_pair(user.id, RefreshTokenRepository(session))
+    await client.request(
+        "DELETE",
+        "/me",
+        json={"password": TEST_PASSWORD},
+        headers={"Authorization": f"Bearer {access}"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +500,11 @@ async def test_auth_requests_are_rate_limited(throttled_client: AsyncClient) -> 
     assert first.status_code == 401
     assert second.status_code == 401
     assert third.status_code == 429
-    assert int(third.headers["retry-after"]) >= 1
+    # Pin the value, not a floor: _send_429 builds the header as
+    # str(max(1, ceil(retry_after))), so ">= 1" held by construction for every
+    # possible input and could only ever catch the header disappearing. With
+    # capacity 2 over 60s the bucket refills one token every 30s.
+    assert third.headers["retry-after"] == "30"
 
 
 async def test_rate_limit_buckets_are_per_endpoint(throttled_client: AsyncClient) -> None:
@@ -491,22 +525,52 @@ async def test_rate_limit_does_not_apply_outside_auth(throttled_client: AsyncCli
         assert response.status_code == 200
 
 
-def test_password_hashing_runs_off_the_event_loop() -> None:
+@pytest.mark.parametrize(
+    ("name", "call"),
+    [
+        ("signup", _signup_request),
+        ("login", _login_request),
+        ("delete_me", _delete_me_request),
+    ],
+)
+async def test_password_hashing_runs_off_the_event_loop(
+    name: str,
+    call: Callable[[AsyncClient, AsyncSession], Awaitable[None]],
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Argon2 is ~75-250 ms of pure CPU. Run inline it parks the event loop
     and stalls every other in-flight request, including the share-sheet path
-    (PRD §9.2). Both call sites must go through a worker thread.
+    (PRD §9.2). Every call site must go through a worker thread.
+
+    This used to assert on the module's *source text* via ``inspect.getsource``,
+    which is not a test of behaviour: it passed if the off-loop call were
+    commented out or moved into dead code, failed on any harmless refactor
+    (extracting a helper, renaming the alias, ruff reflowing the arguments),
+    and only ever read ``api.routes.auth`` — so the identical argon2 verify
+    behind ``DELETE /me`` was never covered at all.
+
+    Recording the thread each hash actually runs on covers all three call
+    sites and cannot be satisfied by a comment.
     """
-    import inspect
+    main_thread = threading.get_ident()
+    threads: list[int] = []
 
-    from api.routes import auth as auth_routes
+    for fn_name in ("hash", "verify", "needs_rehash"):
+        original = getattr(auth_password, fn_name)
 
-    assert inspect.iscoroutinefunction(auth_routes._verify_credentials), (
-        "_verify_credentials must be async so the argon2 verify can be awaited off-loop"
-    )
-    source = inspect.getsource(auth_routes)
-    assert "anyio.to_thread.run_sync(auth_password.hash" in source
-    assert "anyio.to_thread.run_sync(\n        auth_password.verify" in source or (
-        "run_sync(auth_password.verify" in source
+        def recording(*args: Any, _original: Any = original, **kwargs: Any) -> Any:
+            threads.append(threading.get_ident())
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(auth_password, fn_name, recording)
+
+    await call(client, db_session)
+
+    assert threads, f"{name} did no argon2 work — the test is not exercising the path"
+    assert main_thread not in threads, (
+        f"{name} ran argon2 on the event loop thread, parking it for ~{len(threads) * 75}ms"
     )
 
 

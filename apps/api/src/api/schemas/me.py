@@ -21,6 +21,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from api.schemas.auth import MAX_PASSWORD_LENGTH
 from api.schemas.closet import FitSignalResponse, OwnedGarmentResponse
 from api.schemas.enums import (
     Outcome,
@@ -45,8 +46,10 @@ class AccountDeleteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # No complexity rules here, the same as login: this is a credential check
-    # whose only correct failure is 401. See ``schemas.auth``.
-    password: str = Field(min_length=1, max_length=256)
+    # whose only correct failure is 401. The bound is imported rather than
+    # repeated — the literal 256 here and in ``schemas.auth`` were the same
+    # number by coincidence, so raising one would have left the other behind.
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
 
 
 class UserExport(BaseModel):

@@ -17,6 +17,7 @@ closet failure too.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -673,18 +674,21 @@ async def test_closet_size_is_capped(
     ).status_code == 201
 
 
-async def test_unseeded_category_is_a_500_that_names_the_fix(
-    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+async def test_unseeded_category_is_a_500_logged_for_the_operator(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The category row owns the measurement schema every write validates
     against, so a database that never ran the seed cannot answer this request
     at all.
 
     That is the server being misconfigured, not the client sending something
-    wrong — hence 500 rather than the 422 the category gate returns, and a
-    body carrying the command that fixes it. Without this, the failure mode
-    on a fresh deployment is an unexplained crash on the first garment a user
-    tries to save.
+    wrong — hence 500 rather than the 422 the category gate returns. The
+    remediation belongs in the log, though, not the response: the body used to
+    name the package path and the toolchain (``uv run python -m api.seeds…``),
+    which any authenticated client could elicit from an unseeded environment.
     """
     headers = await auth_headers(db_session)
 
@@ -696,10 +700,18 @@ async def test_unseeded_category_is_a_500_that_names_the_fix(
 
     monkeypatch.setattr(GarmentCategoryRepository, "get", _unseeded)
 
-    response = await client.post(GARMENTS, json=garment_body(), headers=headers)
+    with caplog.at_level(logging.ERROR, logger="api.routes.closet"):
+        response = await client.post(GARMENTS, json=garment_body(), headers=headers)
 
     assert response.status_code == 500
-    assert "api.seeds.garment_categories" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert "uv run" not in detail and "api.seeds" not in detail, detail
+    # The operator still gets what they need, with the category that is missing.
+    assert any(
+        record.message == "closet.category.unseeded"
+        and getattr(record, "category_id", None) == MENS_BUTTON_DOWN_SHIRT_ID
+        for record in caplog.records
+    )
 
 
 # ---------------------------------------------------------------------------

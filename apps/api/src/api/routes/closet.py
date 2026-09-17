@@ -33,6 +33,7 @@ static and Pydantic's, while ``dimension`` is checked against the category
 schema here.
 """
 
+import logging
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -41,8 +42,10 @@ from fastapi import APIRouter, HTTPException, status
 
 from api.config import get_settings
 from api.deps import (
+    RATE_LIMITED_RESPONSE,
     UNAUTHORIZED_RESPONSE,
     CurrentUser,
+    ErrorDetail,
     FitSignalRepositoryDep,
     GarmentCategoryRepositoryDep,
     OwnedGarmentRepositoryDep,
@@ -70,6 +73,8 @@ from api.schemas.fit_profile import FitProfileResponse
 from api.seeds.garment_categories import MENS_BUTTON_DOWN_SHIRT_ID
 from api.services.fit_profile import build_user_fit_profile
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/closet", tags=["closet"])
 
 # v1 accepts exactly one garment category (CLAUDE.md "v1 scope rules", PRD
@@ -83,7 +88,18 @@ SUPPORTED_CATEGORY_IDS = frozenset({MENS_BUTTON_DOWN_SHIRT_ID})
 
 _NOT_FOUND_RESPONSE: dict[int | str, dict[str, Any]] = {
     status.HTTP_404_NOT_FOUND: {
-        "description": "No such garment in the authenticated user's closet."
+        # ``model`` matters: the handler does return a body, and without it the
+        # 404 published no schema at all while 401 and 429 both published
+        # ErrorDetail — so a generated client got ``void`` for this one branch.
+        "model": ErrorDetail,
+        "description": "No such garment in the authenticated user's closet.",
+    }
+}
+
+_CLOSET_FULL_RESPONSE: dict[int | str, dict[str, Any]] = {
+    status.HTTP_409_CONFLICT: {
+        "model": ErrorDetail,
+        "description": "Closet is at its garment ceiling; delete something first.",
     }
 }
 
@@ -153,12 +169,13 @@ async def _load_category(
         # In scope but absent from the DB: the seed has not been run against
         # this database. A 500 is right — the request is well-formed and the
         # server is the thing that is misconfigured.
+        # The remediation goes to the operator, not down the wire: the old
+        # body named the package path and the toolchain, which any
+        # authenticated client could elicit from an unseeded environment.
+        logger.error("closet.category.unseeded", extra={"category_id": category_id})
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                f"Garment category {category_id!r} is not seeded. "
-                "Run: uv run python -m api.seeds.garment_categories"
-            ),
+            detail="Garment category configuration is unavailable. Please try again later.",
         )
     return category
 
@@ -185,7 +202,7 @@ def _serialize_measurements(measurements: GarmentMeasurements) -> dict[str, Any]
 
 @router.get(
     "/garments",
-    responses={**UNAUTHORIZED_RESPONSE},
+    responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE},
 )
 async def list_garments(
     user: CurrentUser,
@@ -215,7 +232,7 @@ async def list_garments(
 @router.post(
     "/garments",
     status_code=status.HTTP_201_CREATED,
-    responses={**UNAUTHORIZED_RESPONSE},
+    responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE, **_CLOSET_FULL_RESPONSE},
 )
 async def create_garment(
     body: OwnedGarmentCreate,
@@ -232,7 +249,7 @@ async def create_garment(
     # anyone holding a valid token. The ceiling is far above a real closet —
     # PRD §10.1 asks for 3-5 garments at onboarding.
     settings = get_settings()
-    live = len(await garments.list_for_user(user.id, limit=None))
+    live = await garments.count_for_user(user.id)
     if live >= settings.max_closet_garments:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -261,7 +278,7 @@ async def create_garment(
 
 @router.patch(
     "/garments/{garment_id}",
-    responses={**UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+    responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE, **_NOT_FOUND_RESPONSE},
 )
 async def update_garment(
     garment_id: UUID,
@@ -308,7 +325,7 @@ async def update_garment(
 @router.delete(
     "/garments/{garment_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses={**UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+    responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE, **_NOT_FOUND_RESPONSE},
 )
 async def delete_garment(
     garment_id: UUID,
@@ -336,7 +353,7 @@ async def delete_garment(
 @router.post(
     "/garments/{garment_id}/fit-signals",
     status_code=status.HTTP_201_CREATED,
-    responses={**UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+    responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE, **_NOT_FOUND_RESPONSE},
 )
 async def create_fit_signal(
     garment_id: UUID,
@@ -428,7 +445,7 @@ def _as_numeric(magnitude_cm: float | None) -> Decimal | None:
     return Decimal(str(magnitude_cm))
 
 
-@router.get("/fit-profile", responses={**UNAUTHORIZED_RESPONSE})
+@router.get("/fit-profile", responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE})
 async def get_fit_profile(
     user: CurrentUser,
     garments: OwnedGarmentRepositoryDep,

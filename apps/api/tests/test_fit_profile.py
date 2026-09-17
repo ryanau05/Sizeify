@@ -448,7 +448,7 @@ def test_spread_narrows_as_the_closet_grows() -> None:
 def test_stated_preference_steers_a_thin_closet() -> None:
     """One loved 54.0 cm garment, and the user said "slim" (prior 52.0):
 
-    mean = (1.0 * 54.0 + 0.35 * 52.0) / 1.35 = 72.2 / 1.35 = 53.48
+    mean = (1.0 * 54.0 + 0.15 * 52.0) / 1.15 = 61.8 / 1.15 = 53.74
     """
     profile = build_fit_profile(
         closet(
@@ -481,8 +481,23 @@ def test_prior_is_swamped_by_a_mature_closet() -> None:
 
 def test_prior_weight_is_weaker_than_the_weakest_real_evidence() -> None:
     """A single measured garment must outvote what the user said at signup,
-    even an unrated one — the closet is the evidence, the answer is a hint."""
+    even an unrated one — the closet is the evidence, the answer is a hint.
+
+    The exact value is pinned too. Several tests in this file work the
+    arithmetic out longhand in their docstrings, and this module's own rule is
+    that "the arithmetic in the comment is the specification and the code is
+    what changed" — which only holds if a change to the constant breaks
+    something. It did not: when PRIOR_WEIGHT moved 0.35 -> 0.15, one worked
+    example kept quoting 0.35 while its assertion was quietly re-derived from
+    the new code, leaving the stated specification wrong next to a passing
+    test.
+    """
     assert min(RATING_WEIGHTS.values()) > PRIOR_WEIGHT
+    assert PRIOR_WEIGHT == 0.15, (
+        "PRIOR_WEIGHT changed — update the longhand arithmetic in the "
+        "docstrings of test_stated_preference_steers_a_thin_closet and "
+        "test_prior_is_swamped_by_a_mature_closet to match."
+    )
 
 
 def test_prior_moves_the_centre_but_not_the_spread_at_tuned_gaps() -> None:

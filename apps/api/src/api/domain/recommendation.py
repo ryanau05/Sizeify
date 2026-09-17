@@ -232,13 +232,29 @@ def _reference_garments_for(
     return out
 
 
+# Hand-tuned like BASE_SPREAD_CM and PRIOR_WEIGHT in ``fit_profile``, and
+# named for the same reason: re-tuning should have one greppable home rather
+# than three bare literals inside an expression.
+
+#: How fast confidence falls off as the best size drifts out of range. Larger
+#: punishes distance harder.
+_CLOSENESS_DECAY = 0.6
+
+#: Stand-in gap score when the chart offers only one size — there is no
+#: runner-up to measure separation against, so neither confident nor not.
+_SINGLE_SIZE_GAP_SCORE = 0.55
+
+#: Centimetres of separation at which two sizes count as clearly distinct.
+_GAP_SCALE_CM = 2.0
+
+
 def _confidence(fit_profile: FitProfile, best: RankedSize, second: RankedSize | None) -> float:
-    closeness = 1.0 / (1.0 + 0.6 * best.distance)  # 1.0 when best is fully in range
+    closeness = 1.0 / (1.0 + _CLOSENESS_DECAY * best.distance)  # 1.0 when fully in range
     if second is None:
-        gap_score = 0.55  # only one size offered — moderate, can't compare
+        gap_score = _SINGLE_SIZE_GAP_SCORE
     else:
         gap = max(0.0, second.distance - best.distance)
-        gap_score = 1.0 - math.exp(-gap / 2.0)
+        gap_score = 1.0 - math.exp(-gap / _GAP_SCALE_CM)
     certainty = _CERTAINTY_BY_MATURITY[fit_profile.maturity]
     base = _W_CLOSENESS * closeness + _W_GAP * gap_score + _W_CERTAINTY * certainty
     if fit_profile.maturity is ProfileMaturity.COLD_START:

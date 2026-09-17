@@ -20,6 +20,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from api.main import create_app
 from api.schemas.auth import (
     LoginRequest,
     RefreshRequest,
@@ -488,3 +489,52 @@ def test_auth_request_bodies_reject_unknown_fields(
         model.model_validate({**valid, unknown_field: "x"})
 
     assert any(unknown_field in str(error["loc"]) for error in exc.value.errors())
+
+
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        ("/closet/garments", "get"),
+        ("/closet/garments", "post"),
+        ("/closet/garments/{garment_id}", "patch"),
+        ("/closet/garments/{garment_id}", "delete"),
+        ("/closet/garments/{garment_id}/fit-signals", "post"),
+        ("/closet/fit-profile", "get"),
+        ("/me/export", "get"),
+        ("/me", "delete"),
+    ],
+)
+def test_rate_limited_routes_declare_429(path: str, method: str) -> None:
+    """Every path behind a ``RateLimitMiddleware`` prefix must publish its 429.
+
+    The limiter is middleware, so FastAPI cannot infer the response — it has
+    to be declared. Only the three ``/auth/*`` paths were, even though a
+    second limiter covers ``/closet/*`` and ``/me``, so a client generated
+    from this spec had no Retry-After handling on the closet write path.
+    """
+    spec = create_app().openapi()
+
+    assert "429" in spec["paths"][path][method]["responses"]
+
+
+def test_error_responses_publish_a_body_schema() -> None:
+    """A declared status that returns a body must say so.
+
+    ``_NOT_FOUND_RESPONSE`` carried a description but no ``model``, so the 404
+    published no schema while 401 and 429 both published ``ErrorDetail`` — a
+    typed client got ``void`` for that branch and could not read the ``detail``
+    the handler actually sends.
+    """
+    spec = create_app().openapi()
+    patch_responses = spec["paths"]["/closet/garments/{garment_id}"]["patch"]["responses"]
+
+    for code in ("401", "404", "429"):
+        assert "content" in patch_responses[code], f"{code} publishes no body schema"
+
+
+def test_the_closet_ceiling_is_discoverable() -> None:
+    """``POST /closet/garments`` raises 409 when the closet is full; a client
+    that cannot see it in the spec has no branch for it."""
+    spec = create_app().openapi()
+
+    assert "409" in spec["paths"]["/closet/garments"]["post"]["responses"]
