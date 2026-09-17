@@ -18,6 +18,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from _keys import TEST_PASSWORD
 from pydantic import BaseModel, ValidationError
 
 from api.main import create_app
@@ -248,7 +249,7 @@ def test_signup_request_round_trip() -> None:
     round_trip(
         SignupRequest(
             email="alice@example.com",
-            password="Correct-Horse-Battery-Staple",
+            password=TEST_PASSWORD,
             privacy_consent_accepted_at=datetime(2026, 5, 26, tzinfo=UTC),
             stated_fit_preference=StatedFitPreference.SLIM,
         )
@@ -281,7 +282,7 @@ def test_signup_request_normalizes_naive_consent_timestamp_to_utc() -> None:
     # as UTC rather than losing its consent record to a 422.
     request = SignupRequest(
         email="alice@example.com",
-        password="Correct-Horse-Battery-Staple",
+        password=TEST_PASSWORD,
         privacy_consent_accepted_at=datetime(2026, 5, 26, 12, 0),  # noqa: DTZ001
     )
 
@@ -296,7 +297,7 @@ def test_login_request_accepts_a_password_that_would_fail_signup_policy() -> Non
 
 
 def test_login_request_round_trip() -> None:
-    round_trip(LoginRequest(email="alice@example.com", password="hunter2hunter"))
+    round_trip(LoginRequest(email="alice@example.com", password=TEST_PASSWORD))
 
 
 def test_refresh_request_round_trip() -> None:

@@ -1,4 +1,4 @@
-"""Signing keys for the test suite.
+"""Fixture credentials for the test suite — signing keys and passwords.
 
 One definition, imported everywhere, rather than the same literal pasted
 into a ``monkeypatch.setenv`` call in each test module.
@@ -21,6 +21,18 @@ gitignored.
 Import these rather than writing a new literal::
 
     monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
+
+The same applies to passwords, for the same reason and with the same history:
+five password literals had accumulated across the suite, four of them added on
+this branch, and they tripped the scanner's password detector exactly as the
+signing keys tripped its entropy detector.
+
+The two deliberately *invalid* passwords are not here. ``"Sh0rt!"`` and
+``"correcthorsebatterystaple"`` live at their assertion sites in
+``test_schemas.py`` because their shape *is* the test — one is too short, the
+other uses too few character classes — and a reader checking that the
+validation rules are right should not have to follow an import to find out
+what is being rejected.
 """
 
 from __future__ import annotations
@@ -36,3 +48,18 @@ TEST_JWT_SECRET = "test-secret-do-not-deploy-anywhere"
 #: clutter test output without flagging a real bug. The derivation keeps it
 #: comfortably over.
 ALTERNATE_JWT_SECRET = f"{TEST_JWT_SECRET}-alternate"
+
+
+# ---------------------------------------------------------------------------
+# Passwords
+# ---------------------------------------------------------------------------
+
+#: A password satisfying every rule in ``schemas.auth``: over the length
+#: floor, and drawn from four character classes where three are required.
+TEST_PASSWORD = "Sizeify-Test-Passphrase-1"
+
+#: A second valid password, for the tests that need one which is *not* the
+#: account's — a wrong-password 401, or the signup-enumeration test where an
+#: attacker picks a password for an address that already exists. Derived from
+#: the first so covering those cases costs no new literal.
+ALTERNATE_PASSWORD = f"{TEST_PASSWORD}-alternate"

@@ -8,16 +8,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from _keys import TEST_PASSWORD
 from httpx import AsyncClient
 
-DEFAULT_PASSWORD = "Str0ng-Passphrase"
 DEFAULT_CONSENT_AT = "2026-09-09T10:30:00Z"
 
 
 def signup_body(**overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "email": "alice@example.com",
-        "password": DEFAULT_PASSWORD,
+        "password": TEST_PASSWORD,
         "privacy_consent_accepted_at": DEFAULT_CONSENT_AT,
     }
     body.update(overrides)
@@ -27,7 +27,7 @@ def signup_body(**overrides: Any) -> dict[str, Any]:
 async def signup_and_login(
     client: AsyncClient,
     email: str = "alice@example.com",
-    password: str = DEFAULT_PASSWORD,
+    password: str = TEST_PASSWORD,
 ) -> str:
     """Register and sign in, returning the access token.
 
@@ -48,6 +48,6 @@ async def signup_and_login(
 async def auth_header(
     client: AsyncClient,
     email: str = "alice@example.com",
-    password: str = DEFAULT_PASSWORD,
+    password: str = TEST_PASSWORD,
 ) -> dict[str, str]:
     return {"Authorization": f"Bearer {await signup_and_login(client, email, password)}"}

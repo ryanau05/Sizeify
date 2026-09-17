@@ -24,8 +24,8 @@ from typing import Any
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
-from _factories import TEST_PASSWORD, make_user
-from _keys import TEST_JWT_SECRET
+from _factories import make_user
+from _keys import ALTERNATE_PASSWORD, TEST_JWT_SECRET, TEST_PASSWORD
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -41,7 +41,7 @@ from api.repositories.refresh_tokens import RefreshTokenRepository
 from api.repositories.users import UserRepository
 
 CONSENT_AT = "2026-09-09T10:30:00Z"
-PASSWORD = "Str0ng-Passphrase"
+PASSWORD = TEST_PASSWORD
 
 
 @pytest.fixture(autouse=True)
@@ -246,12 +246,12 @@ async def test_a_taken_address_cannot_be_hijacked_by_signing_up_again(
     with a different password must leave the original credentials intact."""
     assert (await client.post("/auth/signup", json=signup_body())).status_code == 202
     assert (
-        await client.post("/auth/signup", json=signup_body(password="Attacker-Chosen-1"))
+        await client.post("/auth/signup", json=signup_body(password=ALTERNATE_PASSWORD))
     ).status_code == 202
 
     assert (
         await client.post(
-            "/auth/login", json={"email": "alice@example.com", "password": "Attacker-Chosen-1"}
+            "/auth/login", json={"email": "alice@example.com", "password": ALTERNATE_PASSWORD}
         )
     ).status_code == 401
     assert (
@@ -336,7 +336,7 @@ async def test_login_wrong_password_is_401(client: AsyncClient) -> None:
     assert (await client.post("/auth/signup", json=signup_body())).status_code == 202
 
     response = await client.post(
-        "/auth/login", json={"email": "alice@example.com", "password": "Wr0ng-Password"}
+        "/auth/login", json={"email": "alice@example.com", "password": ALTERNATE_PASSWORD}
     )
 
     assert response.status_code == 401
@@ -347,7 +347,7 @@ async def test_login_unknown_email_is_401_with_identical_body(client: AsyncClien
     assert (await client.post("/auth/signup", json=signup_body())).status_code == 202
 
     wrong_password = await client.post(
-        "/auth/login", json={"email": "alice@example.com", "password": "Wr0ng-Password"}
+        "/auth/login", json={"email": "alice@example.com", "password": ALTERNATE_PASSWORD}
     )
     unknown_email = await client.post(
         "/auth/login", json={"email": "nobody@example.com", "password": PASSWORD}
@@ -493,7 +493,7 @@ async def throttled_client(
 
 
 async def test_auth_requests_are_rate_limited(throttled_client: AsyncClient) -> None:
-    body = {"email": "alice@example.com", "password": "Wr0ng-Password"}
+    body = {"email": "alice@example.com", "password": ALTERNATE_PASSWORD}
 
     first = await throttled_client.post("/auth/login", json=body)
     second = await throttled_client.post("/auth/login", json=body)
@@ -512,7 +512,7 @@ async def test_auth_requests_are_rate_limited(throttled_client: AsyncClient) -> 
 async def test_rate_limit_buckets_are_per_endpoint(throttled_client: AsyncClient) -> None:
     """Exhausting login must not lock a user out of refresh — the two have
     different abuse profiles and get their own budgets."""
-    body = {"email": "alice@example.com", "password": "Wr0ng-Password"}
+    body = {"email": "alice@example.com", "password": ALTERNATE_PASSWORD}
     for _ in range(3):
         await throttled_client.post("/auth/login", json=body)
 

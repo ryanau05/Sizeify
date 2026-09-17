@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from _keys import TEST_PASSWORD
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import password as auth_password
@@ -35,12 +36,13 @@ def _short_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
-# Credentials for fixture users. The hash is computed once at import
-# rather than pasted in as a literal: argon2 is deliberately ~75 ms so
-# per-call hashing would tax every test that touches a user, but a
-# literal would silently stop matching ``TEST_PASSWORD`` the moment
-# ``auth.password``'s parameters are recalibrated.
-TEST_PASSWORD = "TestPassw0rd!"
+# Credentials for fixture users. ``TEST_PASSWORD`` comes from ``_keys`` and is
+# re-exported here because most callers want it alongside ``make_user``.
+#
+# The hash is computed once at import rather than pasted in as a literal:
+# argon2 is deliberately ~75 ms so per-call hashing would tax every test that
+# touches a user, but a literal would silently stop matching ``TEST_PASSWORD``
+# the moment ``auth.password``'s parameters are recalibrated.
 TEST_PASSWORD_HASH = auth_password.hash(TEST_PASSWORD)
 
 

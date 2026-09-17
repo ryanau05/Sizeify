@@ -21,14 +21,13 @@ import pytest_asyncio
 import sqlalchemy as sa
 from _api import signup_and_login
 from _factories import (
-    TEST_PASSWORD,
     make_brand_product,
     make_fit_signal,
     make_owned_garment,
     make_recommendation,
     make_user,
 )
-from _keys import TEST_JWT_SECRET
+from _keys import ALTERNATE_PASSWORD, TEST_JWT_SECRET, TEST_PASSWORD
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,7 +51,7 @@ from api.seeds.garment_categories import (
 ME = "/me"
 #: DELETE /me now re-authenticates (PRD §11), so every call carries the password.
 CONFIRM = {"password": TEST_PASSWORD}
-SIGNUP_CONFIRM = {"password": "Str0ng-Passphrase"}
+SIGNUP_CONFIRM = {"password": TEST_PASSWORD}
 
 
 async def erase(client: AsyncClient, access: str, body: dict[str, str] | None = None) -> Any:
@@ -206,7 +205,7 @@ async def test_deleted_account_cannot_log_back_in(
     assert (await erase(client, access, SIGNUP_CONFIRM)).status_code == 204
 
     login = await client.post(
-        "/auth/login", json={"email": "alice@example.com", "password": "Str0ng-Passphrase"}
+        "/auth/login", json={"email": "alice@example.com", "password": TEST_PASSWORD}
     )
 
     assert login.status_code == 401
@@ -341,7 +340,7 @@ async def test_erasure_requires_the_current_password(
     user, _ = await populated_user(db_session)
     access, _ = await token_pair(db_session, user)
 
-    wrong = await erase(client, access, {"password": "not-the-password"})
+    wrong = await erase(client, access, {"password": ALTERNATE_PASSWORD})
 
     assert wrong.status_code == 401
     # Nothing was touched.

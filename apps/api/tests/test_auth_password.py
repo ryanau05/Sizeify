@@ -18,6 +18,7 @@ import time
 
 import anyio
 import pytest
+from _keys import TEST_PASSWORD
 
 from api.auth import password
 from api.auth import password as auth_password
@@ -39,12 +40,12 @@ def test_hash_returns_phc_format() -> None:
 
 
 def test_verify_succeeds_for_correct_password() -> None:
-    h = password.hash("hunter2hunter")
-    assert password.verify("hunter2hunter", h) is True
+    h = password.hash(TEST_PASSWORD)
+    assert password.verify(TEST_PASSWORD, h) is True
 
 
 def test_verify_fails_for_incorrect_password() -> None:
-    h = password.hash("hunter2hunter")
+    h = password.hash(TEST_PASSWORD)
     assert password.verify("hunter3hunter", h) is False
 
 
