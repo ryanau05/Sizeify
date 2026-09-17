@@ -260,12 +260,6 @@ async def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-#: OpenAPI documentation for the 401 every ``CurrentUser`` handler can
-#: return. FastAPI infers the security requirement from the dependency but
-#: not the failure response, so protected routes spread this into their
-#: decorator to keep the generated docs honest::
-#:
-#:     @router.get("/closet/garments", responses=UNAUTHORIZED_RESPONSE)
 class ErrorDetail(BaseModel):
     """The body FastAPI renders for a raised ``HTTPException``.
 
@@ -290,8 +284,10 @@ UNAUTHORIZED_RESPONSE: dict[int | str, dict[str, Any]] = {
     }
 }
 
-#: Every ``/auth/*`` path can be throttled by ``api.rate_limit``, which runs as
-#: middleware and so is invisible to FastAPI's response inference.
+#: Both limiters — ``/auth/*`` keyed by address, ``/closet/*`` and ``/me``
+#: keyed by the verified token subject — run as middleware, and so are
+#: invisible to FastAPI's response inference. Every route behind either one
+#: spreads this in, or its 429 goes undeclared.
 RATE_LIMITED_RESPONSE: dict[int | str, dict[str, Any]] = {
     status.HTTP_429_TOO_MANY_REQUESTS: {
         "model": ErrorDetail,

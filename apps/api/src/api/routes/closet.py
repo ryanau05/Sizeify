@@ -81,7 +81,7 @@ router = APIRouter(prefix="/closet", tags=["closet"])
 # §3.2). The category must also exist in ``garment_category`` — that row
 # owns the measurement schema — but the DB check alone is not the scope
 # gate: seeding a second category should not silently open the API to it.
-# Widening v1 means editing this set *and* the seed *and* the four things
+# Widening v1 means editing this set *and* the seed *and* the five things
 # CLAUDE.md's "Workflow rules" lists, which is exactly the deliberate,
 # greppable change it should be.
 SUPPORTED_CATEGORY_IDS = frozenset({MENS_BUTTON_DOWN_SHIRT_ID})

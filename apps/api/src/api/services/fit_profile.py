@@ -58,7 +58,7 @@ def _measurements_cm(
     ``sample_size`` and maturity but contributed no evidence, so a closet of
     five shirts produced ``maturity: "developing"`` with an empty
     ``dimensions`` map and no hint — a blank profile the user cannot explain
-    and the API does not flag. CLAUDE.md's rule about the four-place
+    and the API does not flag. CLAUDE.md's rule about the five-place
     dimension update names this exact failure mode: silently degraded
     recommendations are harder to notice than an error.
     """

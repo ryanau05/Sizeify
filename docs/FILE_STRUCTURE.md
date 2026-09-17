@@ -65,7 +65,7 @@ apps/api/
 │       ├── main.py              # FastAPI app factory, middleware, route includes
 │       ├── config.py            # Pydantic Settings: DB URL, Redis, Anthropic key, JWT secret
 │       ├── deps.py              # FastAPI dependencies: db session, current user
-│       ├── rate_limit.py        # /auth/* token bucket (in-memory; Redis in Phase 8)
+│       ├── rate_limit.py        # token buckets for /auth/* and /closet/*,/me (Redis in Phase 8)
 │       ├── logging.py           # Structured JSON logging config
 │       │
 │       ├── models/              # SQLAlchemy ORM models, one file per entity

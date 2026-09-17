@@ -1,4 +1,4 @@
-"""In-memory rate limiting for ``/auth/*`` — TKT-P1-07.
+"""In-memory rate limiting for the auth and authenticated surfaces — TKT-P1-07.
 
 Why this exists
 ---------------
@@ -22,7 +22,7 @@ Phase 8 replacement exists:
   address cannot mount a meaningful guessing campaign.
 
 Redis-backed replacement (Phase 8) keeps this module's interface and
-swaps ``_TokenBucket``'s storage.
+swaps ``TokenBucketLimiter``'s storage.
 
 Why a token bucket
 ------------------
@@ -34,8 +34,10 @@ so the sustained rate holds no matter where requests land in time.
 Why raw ASGI rather than ``BaseHTTPMiddleware``
 -----------------------------------------------
 ``BaseHTTPMiddleware`` wraps every request in an anyio task group and
-proxies the response body through a stream. This middleware is installed
-app-wide but only acts on ``/auth/*``, so that overhead would land on the
+proxies the response body through a stream. Two instances are installed
+app-wide — one over ``/auth/*`` keyed by client address, one over
+``/closet/*`` and ``/me`` keyed by the verified token subject — and each
+acts only on its own prefixes, so that overhead would land on the
 share-sheet hot path (PRD §9.2) for no benefit. The raw-ASGI form
 short-circuits to ``await self.app(...)`` on the first character
 comparison for every other route.

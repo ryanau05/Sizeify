@@ -5,14 +5,15 @@ Phase 1 of `PROJECT_PLAN.md` ("Backend core: schema, auth, closet CRUD," weeks 2
 **Phase 1 exit criterion (re-stated from the plan):** an integration test seeds a closet with five garments, calls the matching engine against a fixture `brand_product`, and asserts the recommendation contains size + confidence + fit notes + reference garments matching a hand-computed expectation.
 
 > **Status: all tickets complete (2026-09-10).** Delivered across migrations
-> `0001`–`0005`, 442 passing tests, 99% coverage on `api.domain`. The
-> pre-landing review that followed is summarised in `PROJECT_PLAN.md` under
-> Phase 1; its unfixed findings are carried in `TODOS.md`.
+> `0001`–`0006`, 514 passing tests, 99% coverage on `api.domain`. Two
+> pre-landing reviews are summarised in `PROJECT_PLAN.md` under Phase 1; the
+> first review's findings are closed in `TODOS.md`, and the second review's
+> six defects were fixed on the branch before the PR.
 >
 > Two tickets landed differently from their text, both recorded in the code:
 > TKT-P1-11's coefficients are **additive centimetres**, not multipliers (PRD
 > §6.3 specifies `measured + 2cm`, and a percentage would stretch a 60 cm body
-> length as much as a 107 cm chest); and TKT-P1-16's `prompt_version` constant
+> length as much as a 54 cm chest); and TKT-P1-16's `prompt_version` constant
 > lives at `src/api/llm/versions.py` rather than the top-level `llm/` package
 > `FILE_STRUCTURE.md` sketches, because that package is Phase 3 and is not yet
 > importable.

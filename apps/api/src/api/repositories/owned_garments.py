@@ -46,8 +46,14 @@ class OwnedGarmentRepository(Repository[OwnedGarment, UUID]):
         resolution and a bulk onboarding import can land several garments
         inside one tick.
 
-        ``category_id`` narrows to the §8.2 composite index; TKT-P1-12's
-        fit-profile build is its intended caller.
+        ``category_id`` is a filter, not an index hint: with
+        ``ix_owned_garment_user_id_active`` present the planner takes that
+        and applies ``category_id`` on the heap, and v1 seeds exactly one
+        category anyway. TKT-P1-12's fit-profile build is its caller.
+
+        Neither index covers the ``ORDER BY``, so a page costs a top-N
+        heapsort over the user's live closet. Fine at ≤500 garments; widen
+        the partial index to ``(user_id, created_at, id)`` if that changes.
 
         ``limit=None`` fetches every row. Only the GDPR export (TKT-P1-17)
         should ask for that: an export that silently stopped at 100 rows

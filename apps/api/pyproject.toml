@@ -81,5 +81,5 @@ testpaths = ["tests"]
 # reliably honored in this venv; this makes `uv run pytest` deterministic.
 pythonpath = ["src"]
 markers = [
-    "slow: benchmark / wall-clock-sensitive tests. CI runs these (the backend workflow calls bare `pytest`); exclude locally with `-m 'not slow'`.",
+    "slow: benchmark / wall-clock-sensitive tests. CI runs the whole suite under the coverage gate; exclude locally with `-m 'not slow'`.",
 ]

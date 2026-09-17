@@ -93,8 +93,31 @@ Exit criterion: a fresh clone + `make bootstrap` (or equivalent) gets a contribu
 Goal: a backend that can store a user's closet and run the matching engine in isolation.
 
 > **Status:** all 20 tickets in `PHASE_1_TICKETS.md` are delivered, and the exit
-> criterion passes as `apps/api/tests/integration/test_phase1_exit.py`. 442 tests,
-> 99% coverage on `api.domain`, ruff/mypy/alembic clean. Migrations `0001`–`0005`.
+> criterion passes as `apps/api/tests/integration/test_phase1_exit.py`. 514 tests,
+> 99% coverage on `api.domain`, ruff/mypy/alembic clean. Migrations `0001`–`0006`.
+>
+> A second, specialist pre-landing review ran before the PR and found six
+> defects the first pass missed — all fixed on the branch, each with a
+> regression test confirmed to fail against the pre-fix code:
+>
+> - **Migration `0003` could not apply to a fresh database.** The consent
+>   backfill bound an ISO *string* against a `timestamptz` column, so
+>   `alembic upgrade head` aborted anywhere the schema was not already
+>   present. Every test runs against a database already at head, so the
+>   suite stayed green while the deploy path was broken.
+> - **The authenticated rate limiter could be bypassed by anyone.** It
+>   bucketed on a hash of the *unverified* bearer token, so rotating the
+>   token minted a fresh full bucket per request: 0/50 requests throttled,
+>   no account needed. It now keys on the verified `sub`.
+> - **Reference garments were ranked against the unconditioned profile**
+>   while the deltas came from the use-case variant, so a conditioned
+>   recommendation cited the wrong shirt (PRD §5.4).
+> - `fit_signal.owned_garment_id` had no index, on the 100 ms fit-profile
+>   path (migration `0006`).
+> - The ORM's `lower(email)` index was built on a string literal, not the
+>   column, so the model and migration `0005` disagreed.
+> - Auth request bodies accepted unknown fields while every other body
+>   forbade them, silently discarding a mistyped `stated_fit_preference`.
 >
 > The domain core (TKT-P1-11/12/14/15: `stretch`, `fit_profile`, `matching`,
 > `recommendation`) was originally built on the retired capstone demo branch

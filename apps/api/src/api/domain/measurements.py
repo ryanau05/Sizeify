@@ -14,9 +14,10 @@ unit, positive value, known ``source``); everything category-specific —
 which dimensions exist, which are required, what range each one admits —
 lands here.
 
-Adding a dimension means updating all four of ``measurement_schema``,
-``dimension_weights``, the NLP extraction prompt, and the matching engine
-(CLAUDE.md "Workflow rules"). This module reads the first of those, so it
+Adding a dimension means updating all five of ``measurement_schema``,
+``dimension_weights``, the NLP extraction prompt, the matching engine, and
+``_DIM_LABEL`` in ``domain/recommendation.py`` (CLAUDE.md "Workflow rules").
+This module reads the first of those, so it
 needs no edit when a dimension is added — that is the point of driving it
 from the stored schema.
 """

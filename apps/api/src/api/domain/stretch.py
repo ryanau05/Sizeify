@@ -2,7 +2,7 @@
 
 When the engine compares a candidate garment's size chart against the user's
 fit profile, stretchy fabrics must be made to "fit bigger" than their flat
-measurement: a 107 cm chest in a high-stretch knit wears like a larger
+measurement: a 54 cm chest in a high-stretch knit wears like a larger
 non-stretch shirt. We model this as a small additive offset (in cm) applied to
 the garment's measured value, keyed on the coarse 4-level ``StretchLevel``.
 
@@ -15,7 +15,7 @@ Additive, not multiplicative
 PRD §6.3 specifies the adjustment as an addition in centimetres, and the model
 here follows it literally. This is worth stating because "coefficient" invites
 a multiplier reading, and the two disagree in exactly the place it matters:
-a percentage stretches a 60 cm body length as much as a 107 cm chest, when in
+a percentage stretches a 72 cm body length as much as a 54 cm chest, when in
 practice a knit gives roughly the same absolute room whatever the panel's size.
 Switching to a multiplier is a recalibration of the whole engine, not a
 refactor — treat it the same way as the learning-loop note below.

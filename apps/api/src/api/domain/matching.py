@@ -12,10 +12,14 @@ absolute gap breaks the tie so the most centred size still wins.
 
 Nothing to rank on
 ------------------
-A cold-start profile has no dimensions, so there is no evidence to score any
-size against. Every size then ties at distance 0, and ``within_range`` is
-reported as ``False`` rather than vacuously ``True``: "every dimension is
-inside the preferred range" must not be satisfiable by having no dimensions.
+A profile with no scored dimensions — an empty closet, or a closet whose
+dimensions do not overlap the weights table — has no evidence to score any
+size against. (Not the same as cold start, which is simply fewer than three
+garments: a one-garment closet is cold start and still has dimensions.)
+
+Every size then ties at distance 0, and ``within_range`` is reported as
+``False`` rather than vacuously ``True``: "every dimension is inside the
+preferred range" must not be satisfiable by having no dimensions.
 The caller decides what to do about it — ``domain.recommendation`` clamps
 confidence for a cold-start profile, and PRD §13 asks the app to say "add a
 few shirts to your closet first" instead of showing a size at all.

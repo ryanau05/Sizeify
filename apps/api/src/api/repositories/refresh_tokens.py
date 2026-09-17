@@ -65,10 +65,11 @@ class RefreshTokenRepository(Repository[RefreshToken, UUID]):
         on already-revoked rows so re-running (e.g. from
         ``DELETE /me``) doesn't bump their timestamps.
 
-        Blast-radius logging would be useful here but mypy stubs only
-        expose ``rowcount`` on ``CursorResult``, not the generic
-        ``Result`` returned by ``session.execute``. We can re-add a
-        ``cast`` when there's an incident-response logger to feed.
+        Blast-radius logging would be useful here, and is now only a
+        matter of wanting it: ``mark_revoked`` above does the
+        ``cast(CursorResult[Any], ...)`` that reaches ``rowcount``, so the
+        stub limitation this comment used to cite as the blocker is gone.
+        What is still missing is an incident-response logger to feed.
         """
         await self.session.execute(
             update(RefreshToken)
