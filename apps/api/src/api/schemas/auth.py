@@ -125,6 +125,14 @@ class SignupRequest(BaseModel):
         return value.astimezone(UTC)
 
 
+#: The one sentence ``POST /auth/signup`` ever returns. Module-level so the
+#: tests assert against the same string the schema serves, rather than a
+#: copy that can drift from it.
+SIGNUP_ACCEPTED_DETAIL = (
+    "If that email address is available, an account has been created. Sign in to continue."
+)
+
+
 class SignupAccepted(BaseModel):
     """``POST /auth/signup`` response — identical whether or not the address
     was already registered.
@@ -151,9 +159,18 @@ class SignupAccepted(BaseModel):
 
     #: Fixed text. Anything derived from whether the account existed would
     #: reintroduce the oracle this response exists to close.
-    detail: Literal[
-        "If that email address is available, an account has been created. Sign in to continue."
-    ] = "If that email address is available, an account has been created. Sign in to continue."
+    #:
+    #: A ``str`` with a default, not a single-valued ``Literal``. The Literal
+    #: published as a one-member enum, so a generated client pinned this exact
+    #: sentence and rewording it became a breaking schema change — for copy
+    #: that is expected to change: ``_log_existing_address`` already notes the
+    #: "someone tried to register your address" line that lands here once
+    #: there is an email pipeline. The guarantee that matters is that the body
+    #: is *constant*, which a default gives just as well, and which
+    #: ``test_signup_does_not_reveal_that_an_address_is_taken`` already pins
+    #: where it belongs — by comparing two responses to each other rather than
+    #: either to a hard-coded sentence.
+    detail: str = SIGNUP_ACCEPTED_DETAIL
 
 
 class LoginRequest(BaseModel):

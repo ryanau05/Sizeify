@@ -366,6 +366,20 @@ def _signal_for(
     overlay: PRD §6.2's example garment is "preferred for casual, slightly
     short for layering", and under *layering* every other dimension should
     still carry its ordinary verdict rather than reverting to no feedback.
+
+    **Latest wins.** Where a garment carries several signals on one dimension
+    and use case, the last in ``garment.signals`` is the one that counts —
+    the iteration keeps overwriting ``fallback`` and returns on the first
+    tagged match, and the adapter loads signals oldest-first, so "last"
+    means "most recent". A user who records five chest verdicts over a year
+    has the other four contribute nothing.
+
+    That is the right default — a fit opinion is a current opinion, and
+    averaging a 2024 verdict against a 2026 one would blend a garment's
+    before and after — but it is a real decision and it used to be
+    undocumented, which made it look like an accident of loop order. If
+    superseded verdicts should ever inform confidence, this is where that
+    would be decided.
     """
     fallback: SignalSnapshot | None = None
     for sig in garment.signals:

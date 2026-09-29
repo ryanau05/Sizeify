@@ -13,7 +13,7 @@ to take (PRD §11 data minimization).
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -34,6 +34,7 @@ from api.auth import jwt as auth_jwt
 from api.config import get_settings
 from api.models import GarmentCategory, User
 from api.repositories.refresh_tokens import RefreshTokenRepository
+from api.routes import me as me_routes
 from api.seeds.garment_categories import (
     MENS_BUTTON_DOWN_SHIRT_ID,
     seed_garment_categories,
@@ -360,8 +361,15 @@ async def test_exported_garment_matches_what_the_closet_endpoint_returned(
 async def test_exported_recommendation_keeps_full_precision_confidence(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    """``confidence`` is ``NUMERIC(4, 3)``; the export must not round it to
-    a float on the way out."""
+    """``confidence`` is ``NUMERIC(4, 3)`` and must survive the trip intact —
+    as a JSON *number*, like every other numeric field in the document.
+
+    It used to ship as a string, because the column's ``Decimal`` serializes
+    that way in Pydantic v2: the export emitted ``"confidence": "0.850"``
+    beside ``"magnitude_cm": 1.5``. This asserts both halves of the fix — the
+    type on the wire, and that declaring ``float`` costs no precision at the
+    three decimal places the column actually stores.
+    """
     user = await make_user(db_session)
     cat = await category(db_session)
     product = await make_brand_product(db_session, category=cat)
@@ -370,5 +378,51 @@ async def test_exported_recommendation_keeps_full_precision_confidence(
     )
 
     body = (await client.get(EXPORT, headers=await headers_for(db_session, user))).json()
+    confidence = body["recommendations"][0]["confidence"]
 
-    assert Decimal(body["recommendations"][0]["confidence"]) == Decimal("0.615")
+    assert isinstance(confidence, float), f"should be a JSON number, got {confidence!r}"
+    assert Decimal(str(confidence)) == Decimal("0.615")
+
+
+async def test_export_spanning_many_pages_is_complete_and_unduplicated(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Paging must not drop or repeat a row at a boundary.
+
+    The export reads a page at a time so the event loop gets a yield point
+    every few milliseconds instead of one after half a second — measured at
+    486 ms of uninterrupted blocking at the ceiling the caps allow. That is
+    only safe if the paging is exact, which needs a total ordering: the
+    repositories order on ``created_at`` then ``id``, so rows sharing a
+    timestamp still have one definite sequence.
+
+    Driven with a page size of 3 against 10 rows, so the walk crosses three
+    boundaries and ends on a partial page — the shape that catches an
+    off-by-one in either direction.
+    """
+    monkeypatch.setattr(me_routes, "_EXPORT_PAGE_SIZE", 3)
+
+    user = await make_user(db_session)
+    cat = await category(db_session)
+    garment = await make_owned_garment(db_session, user=user, category=cat)
+    # Explicit timestamps: Postgres ``now()`` is transaction-start time, so
+    # rows written in one test would otherwise share a ``created_at`` and the
+    # ordering would rest entirely on the id tiebreak.
+    expected = [
+        str(
+            (
+                await make_fit_signal(
+                    db_session,
+                    owned_garment=garment,
+                    created_at=datetime(2026, 6, 1, tzinfo=UTC) + timedelta(minutes=i),
+                )
+            ).id
+        )
+        for i in range(10)
+    ]
+
+    body = (await client.get(EXPORT, headers=await headers_for(db_session, user))).json()
+    returned = [item["id"] for item in body["signals"]]
+
+    assert returned == expected, "paging dropped, duplicated, or reordered rows"
+    assert len(returned) == len(set(returned))

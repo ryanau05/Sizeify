@@ -35,7 +35,12 @@ class User(Base):
     )
 
     id: Mapped[UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid4)
-    email: Mapped[str] = mapped_column(sa.Text(), nullable=False, unique=True)
+    # Uniqueness lives on ``uq_user_email_lower`` above, not here. A plain
+    # ``unique=True`` would be a second, redundant constraint: it rejects a
+    # strict subset of what the case-insensitive index already rejects, while
+    # costing another unique check per INSERT and giving the signup handler a
+    # second constraint name to recognise (migration 0007).
+    email: Mapped[str] = mapped_column(sa.Text(), nullable=False)
     # Argon2id PHC string from ``api.auth.password.hash`` — algorithm,
     # parameters, salt and digest in one opaque field. Never leaves the
     # server (excluded from the §11 export, see schemas/me.py).

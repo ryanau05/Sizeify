@@ -93,8 +93,8 @@ Exit criterion: a fresh clone + `make bootstrap` (or equivalent) gets a contribu
 Goal: a backend that can store a user's closet and run the matching engine in isolation.
 
 > **Status:** all 20 tickets in `PHASE_1_TICKETS.md` are delivered, and the exit
-> criterion passes as `apps/api/tests/integration/test_phase1_exit.py`. 522 tests,
-> 99% coverage on `api.domain`, ruff/mypy/alembic clean. Migrations `0001`–`0006`.
+> criterion passes as `apps/api/tests/integration/test_phase1_exit.py`. 543 tests,
+> 99% coverage on `api.domain`, ruff/mypy/alembic clean. Migrations `0001`–`0007`.
 >
 > Two further reviews ran before the PR — a specialist pass and an
 > adversarial pass — finding thirteen defects between them that the first
@@ -200,6 +200,13 @@ Exit criterion: integration test seeds a closet with five garments, calls the ma
 ### Phase 2 — Scrapers: interface, ten modules, fixtures (weeks 3–4, parallelizable with Phase 1)
 
 Goal: ten brands scraped reliably, with a daily synthetic test detecting HTML drift before users do.
+
+> **Tickets: `docs/PHASE_2_TICKETS.md`** — 25 tickets across three tracks. Two
+> things it settles that this section leaves open: the scrape budget is **1.5 s**
+> (PRD §9.2, not §7.3's 1 s — §9.2 is the section whose budgets sum to the 2.5 s
+> p50), and `brand_product.size_chart` is **normalized to cm and to the canonical
+> dimension names** at the scraper boundary so `domain/matching.py` can compare it
+> to `owned_garment.measurements` without a translation layer.
 
 Deliverables:
 - `apps/api/src/scrapers/base.py` defines the uniform interface (PRD §9.3). Every brand module conforms.

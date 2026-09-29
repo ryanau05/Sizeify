@@ -15,7 +15,6 @@ The export deliberately excludes:
 """
 
 from datetime import datetime
-from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
@@ -111,7 +110,15 @@ class RecommendationExport(BaseModel):
     id: UUID
     brand_product_id: UUID
     recommended_size: str
-    confidence: Decimal
+    # A JSON number, like every other numeric field on the wire.
+    #
+    # The column is NUMERIC(4, 3) and the ORM hands back a ``Decimal``, which
+    # Pydantic v2 serializes as a *string* — so the export emitted
+    # ``"confidence": "0.850"`` alongside ``"magnitude_cm": 1.5``, two numeric
+    # fields in one document with two different JSON types. Declaring ``float``
+    # coerces at the boundary; the stored value keeps its exactness, and three
+    # decimal places round-trip through a float unharmed.
+    confidence: float
     fit_notes: dict[str, object]
     reference_garment_ids: list[UUID]
     use_case_assumed: str | None

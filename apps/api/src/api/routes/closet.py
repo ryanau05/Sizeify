@@ -26,8 +26,10 @@ Two layers, because the rules come from two places:
   the PRD §5.2 range on each. That schema is a per-category JSONB blob
   loaded at request time, so it cannot live in a Pydantic model.
 
-Both surface as 422 with the same ``loc``/``msg``/``type`` entry shape, so
-a client parses one error format regardless of which layer rejected it.
+Both surface as 422 with the same ``loc``/``msg``/``type`` entry shape, and
+the ``type`` codes share one vocabulary — snake_case, no dots, as Pydantic v2
+emits — so a client branching on ``type`` learns a single format regardless
+of which layer rejected the body.
 The same split applies to ``POST .../fit-signals``: the ``verdict`` enum is
 static and Pydantic's, while ``dimension`` is checked against the category
 schema here.
@@ -49,6 +51,7 @@ from api.deps import (
     FitSignalRepositoryDep,
     GarmentCategoryRepositoryDep,
     OwnedGarmentRepositoryDep,
+    UserRepositoryDep,
 )
 from api.domain.measurements import (
     MeasurementProblem,
@@ -132,12 +135,20 @@ def _unprocessable(errors: list[dict[str, Any]]) -> HTTPException:
 def _measurement_errors(
     problems: list[MeasurementProblem], *, body_field: str = "measurements"
 ) -> list[dict[str, Any]]:
-    """Render domain problems as per-field validation errors."""
+    """Render domain problems as per-field validation errors.
+
+    ``type`` is snake_case with no dots, matching the vocabulary Pydantic v2
+    emits (``string_too_short``, ``missing``, …). These used to be v1-style
+    dotted strings — ``value_error.measurement.below_minimum`` — so one
+    endpoint answered with two different code vocabularies depending on which
+    layer rejected the body, and ``type`` is the only machine-readable field
+    a client has to branch on.
+    """
     return [
         {
             "loc": ["body", body_field, *problem.field_path],
             "msg": problem.message,
-            "type": f"value_error.measurement.{problem.kind}",
+            "type": f"measurement_{problem.kind}",
         }
         for problem in problems
     ]
@@ -161,7 +172,7 @@ def _require_supported_category(category_id: str) -> None:
                         f"Unsupported garment category {category_id!r}. "
                         f"v1 supports: {', '.join(sorted(SUPPORTED_CATEGORY_IDS))}."
                     ),
-                    "type": "value_error.category.unsupported",
+                    "type": "category_unsupported",
                 }
             ]
         )
@@ -246,27 +257,37 @@ async def create_garment(
     user: CurrentUser,
     garments: OwnedGarmentRepositoryDep,
     categories: GarmentCategoryRepositoryDep,
+    users: UserRepositoryDep,
 ) -> OwnedGarmentResponse:
     """Add a garment to the authenticated user's closet."""
     _require_supported_category(body.category_id)
     category = await _load_category(body.category_id, categories)
     _validate_against_category(body.measurements, category)
 
-    # Bounded so the endpoint is not an unbounded row-creation primitive for
-    # anyone holding a valid token. The ceiling is far above a real closet —
-    # PRD §10.1 asks for 3-5 garments at onboarding.
     settings = get_settings()
-    live = await garments.count_for_user(user.id)
-    if live >= settings.max_closet_garments:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Closet is full ({settings.max_closet_garments} garments). "
-                "Delete something before adding more."
-            ),
-        )
 
     async with transaction(garments.session):
+        # Bounded so the endpoint is not an unbounded row-creation primitive
+        # for anyone holding a valid token. The ceiling is far above a real
+        # closet — PRD §10.1 asks for 3-5 garments at onboarding.
+        #
+        # Count and insert are one critical section, taken per user. Reading
+        # the count outside the transaction made this check-then-act: two
+        # concurrent creates both saw the same pre-count and both proceeded,
+        # so a closet could pass its maximum by as many rows as there were
+        # requests in flight. The lock is on the user's own row, so it
+        # serializes only that user's creates.
+        await users.lock(user.id)
+        live = await garments.count_for_user(user.id)
+        if live >= settings.max_closet_garments:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Closet is full ({settings.max_closet_garments} garments). "
+                    "Delete something before adding more."
+                ),
+            )
+
         garment = await garments.create(
             user_id=user.id,
             category_id=body.category_id,
@@ -444,7 +465,7 @@ def _validate_dimension(dimension: str, category: GarmentCategory) -> None:
                     f"Unknown fit dimension {dimension!r} for category "
                     f"{category.id!r}. Expected one of: {', '.join(sorted(known)) or '(none)'}."
                 ),
-                "type": "value_error.dimension.unknown",
+                "type": "dimension_unknown",
             }
         ]
     )

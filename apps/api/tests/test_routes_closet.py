@@ -37,7 +37,9 @@ from api.deps import get_session
 from api.main import create_app
 from api.models import GarmentCategory, OwnedGarment
 from api.repositories import GarmentCategoryRepository
+from api.repositories.owned_garments import OwnedGarmentRepository
 from api.repositories.refresh_tokens import RefreshTokenRepository
+from api.repositories.users import UserRepository
 from api.seeds.garment_categories import (
     MENS_BUTTON_DOWN_SHIRT_ID,
     seed_garment_categories,
@@ -845,3 +847,112 @@ async def test_parameterized_routes_get_their_own_bucket(
     deleted = await user_throttled_client.delete(f"{GARMENTS}/{garment_id}", headers=headers)
 
     assert deleted.status_code == 204, "the list bucket swallowed the delete route"
+
+
+async def test_both_validation_layers_use_one_error_vocabulary(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """One endpoint, one set of machine-readable error codes.
+
+    Two layers reject a body here: Pydantic, for what is static (a blank
+    brand), and the domain, for what the category schema declares (a chest
+    measurement outside PRD §5.2's range). ``type`` is the only field a client
+    can branch on, and it used to come back in two vocabularies — Pydantic's
+    v2 snake_case from one layer, hand-written v1-style dotted strings
+    (``value_error.measurement.below_minimum``) from the other.
+
+    Asserts the shape they now share rather than the exact spellings, so
+    adding a new domain check does not need this test edited — only a new
+    check that reaches for a dot does.
+    """
+    headers = await auth_headers(db_session)
+
+    pydantic_rejected = await client.post(GARMENTS, json=garment_body(brand=""), headers=headers)
+    domain_rejected = await client.post(
+        GARMENTS,
+        json=garment_body(
+            measurements={
+                **measurements(),
+                "chest": {"value": 5.0, "unit": "cm", "source": "manual_tape"},
+            }
+        ),
+        headers=headers,
+    )
+
+    assert pydantic_rejected.status_code == 422
+    assert domain_rejected.status_code == 422
+
+    codes = [
+        error["type"]
+        for response in (pydantic_rejected, domain_rejected)
+        for error in response.json()["detail"]
+    ]
+    assert codes, "neither layer produced an error entry"
+    assert all("." not in code for code in codes), f"mixed code vocabularies: {codes}"
+    assert all(code == code.lower() for code in codes), codes
+
+    # And every entry still names where it came from, from either layer.
+    for response in (pydantic_rejected, domain_rejected):
+        for error in response.json()["detail"]:
+            assert error["loc"][0] == "body"
+            assert error["msg"]
+
+
+async def test_the_closet_ceiling_is_checked_under_a_lock(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Count and insert must be one critical section.
+
+    The count used to be read outside the transaction that inserts, making
+    this check-then-act: two concurrent creates both observed the same
+    pre-count and both proceeded, so a closet could pass its maximum by as
+    many rows as there were requests in flight.
+
+    A genuinely concurrent test would need two sessions on two connections,
+    which the SAVEPOINT harness cannot give. So this asserts the property that
+    makes the race impossible instead: the user's row is locked, and the count
+    is read, before any insert happens — an ordering that cannot hold if the
+    check sits outside the transaction.
+    """
+    events: list[str] = []
+    real_lock = UserRepository.lock
+    real_count = OwnedGarmentRepository.count_for_user
+    real_create = OwnedGarmentRepository.create
+
+    async def traced_lock(self: UserRepository, id: UUID) -> None:
+        events.append("lock")
+        return await real_lock(self, id)
+
+    async def traced_count(self: OwnedGarmentRepository, user_id: UUID) -> int:
+        events.append("count")
+        return await real_count(self, user_id)
+
+    async def traced_create(self: OwnedGarmentRepository, **kwargs: Any) -> OwnedGarment:
+        events.append("create")
+        return await real_create(self, **kwargs)
+
+    monkeypatch.setattr(UserRepository, "lock", traced_lock)
+    monkeypatch.setattr(OwnedGarmentRepository, "count_for_user", traced_count)
+    monkeypatch.setattr(OwnedGarmentRepository, "create", traced_create)
+
+    headers = await auth_headers(db_session)
+    created = await client.post(GARMENTS, json=garment_body(), headers=headers)
+
+    assert created.status_code == 201
+    assert events == ["lock", "count", "create"], events
+
+
+async def test_the_closet_ceiling_still_refuses_at_the_limit(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Moving the check inside the transaction must not stop it refusing."""
+    monkeypatch.setenv("MAX_CLOSET_GARMENTS", "1")
+    get_settings.cache_clear()
+    headers = await auth_headers(db_session)
+
+    first = await client.post(GARMENTS, json=garment_body(), headers=headers)
+    second = await client.post(GARMENTS, json=garment_body(), headers=headers)
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert "full" in second.json()["detail"]

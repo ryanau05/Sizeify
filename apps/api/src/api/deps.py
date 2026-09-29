@@ -24,7 +24,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -269,6 +269,28 @@ class ErrorDetail(BaseModel):
     """
 
     detail: str
+
+
+async def _set_no_store(response: Response) -> None:
+    """Mark a response as never storable.
+
+    RFC 6749 §5.1 requires ``Cache-Control: no-store`` and ``Pragma:
+    no-cache`` on any response carrying a token, and the same reasoning
+    covers ``GET /me/export`` — a complete dump of one person's personal
+    data, which is exactly the thing that must not sit in a shared proxy
+    cache or a browser's disk cache after the session ends.
+
+    ``Pragma`` is HTTP/1.0 and redundant against any cache written this
+    century; it is here because the RFC names it and costs nothing.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+
+#: Spread into the route decorator as ``dependencies=[NO_STORE]``. A
+#: dependency rather than middleware so it is visible at the route it guards:
+#: the next person adding a token-bearing endpoint sees it on the neighbours.
+NO_STORE = Depends(_set_no_store)
 
 
 #: Reusable OpenAPI ``responses`` entries. Spread into route decorators::

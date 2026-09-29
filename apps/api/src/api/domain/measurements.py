@@ -212,8 +212,8 @@ def synthesize_feedback_text(
 
         >>> synthesize_feedback_text("chest", "slightly_tight")
         'User-added: chest slightly tight'
-        >>> synthesize_feedback_text("sleeve_length", "too_long", magnitude_cm=2.5)
-        'User-added: sleeve length too long (by 2.5cm)'
+        >>> synthesize_feedback_text("sleeve_length", "too_short", magnitude_cm=2.5)
+        'User-added: sleeve length too short (by 2.5cm)'
     """
     phrase = f"{dimension.replace('_', ' ')} {verdict.replace('_', ' ')}"
     qualifiers = []

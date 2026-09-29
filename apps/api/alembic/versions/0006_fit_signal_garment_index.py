@@ -23,9 +23,20 @@ index rather than making the planner heapsort the result.
 
 Both tables are trivially small in v1 (single user, ≤500 garments), so
 the index is built non-concurrently inside the migration transaction.
-The first index added after there is real production data will need
-``postgresql_concurrently=True`` inside ``op.get_context().autocommit_block()``,
-which cannot run in a transactional migration.
+
+**Before adding an index to a table with production data in it**, that is
+no longer good enough: ``CREATE INDEX`` takes a SHARE lock and blocks
+writes for the whole build. Use::
+
+    with op.get_context().autocommit_block():
+        op.create_index(..., postgresql_concurrently=True)
+
+``CONCURRENTLY`` cannot run inside a transaction, which is what the
+autocommit block is for. Two consequences worth knowing before reaching
+for it: the build takes roughly twice as long and can fail part-way,
+leaving an INVALID index that must be dropped and retried (it is not
+retried automatically), and the migration is then non-transactional, so a
+failure half-way through does not roll back the statements before it.
 """
 
 from collections.abc import Sequence

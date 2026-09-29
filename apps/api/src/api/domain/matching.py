@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from api.domain.dimension_weights import BUTTON_DOWN_DIMENSION_WEIGHTS
+from api.domain.dimension_weights import weights_for_category
 from api.domain.fit_profile import FitProfile
 from api.domain.stretch import effective_measurement
 from api.schemas.enums import StretchLevel
@@ -75,8 +75,15 @@ class RankedSize:
 
 
 def _weights_for(fit_profile: FitProfile) -> Mapping[str, float]:
-    # v1 is button-downs only; the weights table is the single source of truth.
-    return BUTTON_DOWN_DIMENSION_WEIGHTS
+    """The weights tuned for this profile's category.
+
+    Used to take the profile and ignore it, returning the button-down table
+    unconditionally — so the parameter read as a dispatch that did not
+    dispatch, and a profile for some other category would have been ranked
+    against button-down priorities without a word. It is a real lookup now,
+    and an untuned category raises rather than falling back.
+    """
+    return weights_for_category(fit_profile.category_id)
 
 
 def match(

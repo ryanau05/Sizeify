@@ -40,6 +40,7 @@ class FitSignalRepository(Repository[FitSignal, UUID]):
         *,
         include_deleted_garments: bool = True,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[FitSignal]:
         """Every signal on every garment ``user_id`` owns, oldest first.
 
@@ -53,6 +54,11 @@ class FitSignalRepository(Repository[FitSignal, UUID]):
         default caller is the GDPR export (TKT-P1-17), which must report
         every row still held. A UI-facing caller wanting only live garments
         passes ``False``.
+
+        ``limit``/``offset`` page the result. The ordering is total — a
+        ``created_at`` tie breaks on ``id`` — so paging cannot repeat or skip
+        a row the way an unordered page would. The GDPR export uses this to
+        walk a large account without materializing it in one go.
         """
         stmt = (
             sa.select(FitSignal)
@@ -61,7 +67,7 @@ class FitSignalRepository(Repository[FitSignal, UUID]):
         )
         if not include_deleted_garments:
             stmt = stmt.where(OwnedGarment.deleted_at.is_(None))
-        stmt = stmt.order_by(FitSignal.created_at, FitSignal.id)
+        stmt = stmt.order_by(FitSignal.created_at, FitSignal.id).offset(offset)
         if limit is not None:
             stmt = stmt.limit(limit)
 

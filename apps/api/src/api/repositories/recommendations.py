@@ -116,7 +116,7 @@ class RecommendationRepository(Repository[Recommendation, UUID]):
         )
 
     async def list_for_user(
-        self, user_id: UUID, *, limit: int | None = None
+        self, user_id: UUID, *, limit: int | None = None, offset: int = 0
     ) -> list[Recommendation]:
         """One user's recommendations, oldest first.
 
@@ -125,11 +125,15 @@ class RecommendationRepository(Repository[Recommendation, UUID]):
         (TKT-P1-17) and a dump reads as a timeline. The app's
         recent-recommendations view lands in Phase 6 and should sort DESC
         to use that index; the export is not on any latency budget.
+
+        ``limit``/``offset`` page the result. The ordering is total, so a page
+        boundary cannot repeat or drop a row.
         """
         stmt = (
             sa.select(Recommendation)
             .where(Recommendation.user_id == user_id)
             .order_by(Recommendation.created_at, Recommendation.id)
+            .offset(offset)
         )
         if limit is not None:
             stmt = stmt.limit(limit)
