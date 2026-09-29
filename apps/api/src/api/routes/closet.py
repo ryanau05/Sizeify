@@ -26,8 +26,10 @@ Two layers, because the rules come from two places:
   the PRD §5.2 range on each. That schema is a per-category JSONB blob
   loaded at request time, so it cannot live in a Pydantic model.
 
-Both surface as 422 with the same ``loc``/``msg``/``type`` entry shape, so
-a client parses one error format regardless of which layer rejected it.
+Both surface as 422 with the same ``loc``/``msg``/``type`` entry shape, and
+the ``type`` codes share one vocabulary — snake_case, no dots, as Pydantic v2
+emits — so a client branching on ``type`` learns a single format regardless
+of which layer rejected the body.
 The same split applies to ``POST .../fit-signals``: the ``verdict`` enum is
 static and Pydantic's, while ``dimension`` is checked against the category
 schema here.
@@ -132,12 +134,20 @@ def _unprocessable(errors: list[dict[str, Any]]) -> HTTPException:
 def _measurement_errors(
     problems: list[MeasurementProblem], *, body_field: str = "measurements"
 ) -> list[dict[str, Any]]:
-    """Render domain problems as per-field validation errors."""
+    """Render domain problems as per-field validation errors.
+
+    ``type`` is snake_case with no dots, matching the vocabulary Pydantic v2
+    emits (``string_too_short``, ``missing``, …). These used to be v1-style
+    dotted strings — ``value_error.measurement.below_minimum`` — so one
+    endpoint answered with two different code vocabularies depending on which
+    layer rejected the body, and ``type`` is the only machine-readable field
+    a client has to branch on.
+    """
     return [
         {
             "loc": ["body", body_field, *problem.field_path],
             "msg": problem.message,
-            "type": f"value_error.measurement.{problem.kind}",
+            "type": f"measurement_{problem.kind}",
         }
         for problem in problems
     ]
@@ -161,7 +171,7 @@ def _require_supported_category(category_id: str) -> None:
                         f"Unsupported garment category {category_id!r}. "
                         f"v1 supports: {', '.join(sorted(SUPPORTED_CATEGORY_IDS))}."
                     ),
-                    "type": "value_error.category.unsupported",
+                    "type": "category_unsupported",
                 }
             ]
         )
@@ -444,7 +454,7 @@ def _validate_dimension(dimension: str, category: GarmentCategory) -> None:
                     f"Unknown fit dimension {dimension!r} for category "
                     f"{category.id!r}. Expected one of: {', '.join(sorted(known)) or '(none)'}."
                 ),
-                "type": "value_error.dimension.unknown",
+                "type": "dimension_unknown",
             }
         ]
     )

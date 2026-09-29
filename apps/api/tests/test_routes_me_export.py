@@ -361,8 +361,15 @@ async def test_exported_garment_matches_what_the_closet_endpoint_returned(
 async def test_exported_recommendation_keeps_full_precision_confidence(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    """``confidence`` is ``NUMERIC(4, 3)``; the export must not round it to
-    a float on the way out."""
+    """``confidence`` is ``NUMERIC(4, 3)`` and must survive the trip intact —
+    as a JSON *number*, like every other numeric field in the document.
+
+    It used to ship as a string, because the column's ``Decimal`` serializes
+    that way in Pydantic v2: the export emitted ``"confidence": "0.850"``
+    beside ``"magnitude_cm": 1.5``. This asserts both halves of the fix — the
+    type on the wire, and that declaring ``float`` costs no precision at the
+    three decimal places the column actually stores.
+    """
     user = await make_user(db_session)
     cat = await category(db_session)
     product = await make_brand_product(db_session, category=cat)
@@ -371,8 +378,10 @@ async def test_exported_recommendation_keeps_full_precision_confidence(
     )
 
     body = (await client.get(EXPORT, headers=await headers_for(db_session, user))).json()
+    confidence = body["recommendations"][0]["confidence"]
 
-    assert Decimal(body["recommendations"][0]["confidence"]) == Decimal("0.615")
+    assert isinstance(confidence, float), f"should be a JSON number, got {confidence!r}"
+    assert Decimal(str(confidence)) == Decimal("0.615")
 
 
 async def test_export_spanning_many_pages_is_complete_and_unduplicated(

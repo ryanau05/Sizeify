@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.schemas.enums import (
     FitSignalSource,
@@ -131,24 +131,26 @@ class OwnedGarmentUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    @model_validator(mode="before")
+    @field_validator(*_NOT_NULLABLE_ON_UPDATE, mode="before")
     @classmethod
-    def _reject_explicit_nulls(cls, data: Any) -> Any:
+    def _reject_explicit_null(cls, value: Any) -> Any:
         """422 on a present-but-null key backing a NOT NULL column.
 
-        Runs in ``before`` mode because the distinction being enforced is
-        "was the key present at all", which is gone by the time the fields
-        are parsed — an omitted field and an explicit ``null`` both arrive
-        as ``None`` afterwards.
+        A *field* validator, not a model one, so the error carries the field
+        in its ``loc``. The model-level version produced ``loc: []`` and named
+        the offending fields only inside the prose message, which meant a
+        client could not highlight the input that was wrong and a second
+        nulled field arrived joined by a comma rather than as its own entry —
+        neither of which matches how every other 422 on this endpoint reads.
+
+        The distinction being enforced is "was the key present at all", and
+        this still draws it: Pydantic skips a field validator when the key is
+        absent and the field has a default, so an omitted field never reaches
+        here while an explicit ``null`` does.
         """
-        if not isinstance(data, dict):
-            return data
-        nulled = [f for f in _NOT_NULLABLE_ON_UPDATE if f in data and data[f] is None]
-        if nulled:
-            raise ValueError(
-                "cannot be cleared; omit the field to leave it unchanged: " + ", ".join(nulled)
-            )
-        return data
+        if value is None:
+            raise ValueError("cannot be cleared; omit the field to leave it unchanged")
+        return value
 
     brand: _BrandField | None = None
     product_name: _ProductNameField | None = None

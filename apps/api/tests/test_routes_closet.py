@@ -845,3 +845,52 @@ async def test_parameterized_routes_get_their_own_bucket(
     deleted = await user_throttled_client.delete(f"{GARMENTS}/{garment_id}", headers=headers)
 
     assert deleted.status_code == 204, "the list bucket swallowed the delete route"
+
+
+async def test_both_validation_layers_use_one_error_vocabulary(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """One endpoint, one set of machine-readable error codes.
+
+    Two layers reject a body here: Pydantic, for what is static (a blank
+    brand), and the domain, for what the category schema declares (a chest
+    measurement outside PRD §5.2's range). ``type`` is the only field a client
+    can branch on, and it used to come back in two vocabularies — Pydantic's
+    v2 snake_case from one layer, hand-written v1-style dotted strings
+    (``value_error.measurement.below_minimum``) from the other.
+
+    Asserts the shape they now share rather than the exact spellings, so
+    adding a new domain check does not need this test edited — only a new
+    check that reaches for a dot does.
+    """
+    headers = await auth_headers(db_session)
+
+    pydantic_rejected = await client.post(GARMENTS, json=garment_body(brand=""), headers=headers)
+    domain_rejected = await client.post(
+        GARMENTS,
+        json=garment_body(
+            measurements={
+                **measurements(),
+                "chest": {"value": 5.0, "unit": "cm", "source": "manual_tape"},
+            }
+        ),
+        headers=headers,
+    )
+
+    assert pydantic_rejected.status_code == 422
+    assert domain_rejected.status_code == 422
+
+    codes = [
+        error["type"]
+        for response in (pydantic_rejected, domain_rejected)
+        for error in response.json()["detail"]
+    ]
+    assert codes, "neither layer produced an error entry"
+    assert all("." not in code for code in codes), f"mixed code vocabularies: {codes}"
+    assert all(code == code.lower() for code in codes), codes
+
+    # And every entry still names where it came from, from either layer.
+    for response in (pydantic_rejected, domain_rejected):
+        for error in response.json()["detail"]:
+            assert error["loc"][0] == "body"
+            assert error["msg"]
