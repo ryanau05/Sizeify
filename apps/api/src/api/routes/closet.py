@@ -51,6 +51,7 @@ from api.deps import (
     FitSignalRepositoryDep,
     GarmentCategoryRepositoryDep,
     OwnedGarmentRepositoryDep,
+    UserRepositoryDep,
 )
 from api.domain.measurements import (
     MeasurementProblem,
@@ -256,27 +257,37 @@ async def create_garment(
     user: CurrentUser,
     garments: OwnedGarmentRepositoryDep,
     categories: GarmentCategoryRepositoryDep,
+    users: UserRepositoryDep,
 ) -> OwnedGarmentResponse:
     """Add a garment to the authenticated user's closet."""
     _require_supported_category(body.category_id)
     category = await _load_category(body.category_id, categories)
     _validate_against_category(body.measurements, category)
 
-    # Bounded so the endpoint is not an unbounded row-creation primitive for
-    # anyone holding a valid token. The ceiling is far above a real closet —
-    # PRD §10.1 asks for 3-5 garments at onboarding.
     settings = get_settings()
-    live = await garments.count_for_user(user.id)
-    if live >= settings.max_closet_garments:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Closet is full ({settings.max_closet_garments} garments). "
-                "Delete something before adding more."
-            ),
-        )
 
     async with transaction(garments.session):
+        # Bounded so the endpoint is not an unbounded row-creation primitive
+        # for anyone holding a valid token. The ceiling is far above a real
+        # closet — PRD §10.1 asks for 3-5 garments at onboarding.
+        #
+        # Count and insert are one critical section, taken per user. Reading
+        # the count outside the transaction made this check-then-act: two
+        # concurrent creates both saw the same pre-count and both proceeded,
+        # so a closet could pass its maximum by as many rows as there were
+        # requests in flight. The lock is on the user's own row, so it
+        # serializes only that user's creates.
+        await users.lock(user.id)
+        live = await garments.count_for_user(user.id)
+        if live >= settings.max_closet_garments:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Closet is full ({settings.max_closet_garments} garments). "
+                    "Delete something before adding more."
+                ),
+            )
+
         garment = await garments.create(
             user_id=user.id,
             category_id=body.category_id,

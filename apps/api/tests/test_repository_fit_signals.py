@@ -6,10 +6,11 @@ owning garment should sweep its signals away.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
-from _factories import make_fit_signal, make_owned_garment
+from _factories import make_fit_signal, make_owned_garment, make_user
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -97,3 +98,55 @@ async def test_garment_delete_cascades_to_signals(db_session: AsyncSession) -> N
         .all()
     )
     assert remaining == []
+
+
+async def test_list_for_user_honours_a_limit(db_session: AsyncSession) -> None:
+    """Paging works, and pages in the documented order.
+
+    ``limit`` was unexercised — every v1 caller passes the default — while
+    both sibling repositories got paging tests. The GDPR export now pages
+    through this method, so an off-by-one here would silently truncate a
+    compliance response.
+    """
+    user = await make_user(db_session)
+    garment = await make_owned_garment(db_session, user=user)
+    # Explicit timestamps: Postgres ``now()`` is transaction-start time, so
+    # rows written in one test otherwise share a ``created_at`` and the order
+    # would rest entirely on the random-uuid tiebreak.
+    created = [
+        await make_fit_signal(
+            db_session,
+            owned_garment=garment,
+            created_at=datetime(2026, 5, 1, tzinfo=UTC) + timedelta(days=index),
+        )
+        for index in range(5)
+    ]
+
+    repo = FitSignalRepository(db_session)
+    first_two = await repo.list_for_user(user.id, limit=2)
+    skip_two = await repo.list_for_user(user.id, limit=2, offset=2)
+    tail = await repo.list_for_user(user.id, offset=4)
+
+    assert [s.id for s in first_two] == [created[0].id, created[1].id]
+    assert [s.id for s in skip_two] == [created[2].id, created[3].id]
+    assert [s.id for s in tail] == [created[4].id]
+
+
+async def test_list_for_user_orders_oldest_first(db_session: AsyncSession) -> None:
+    """The ``ORDER BY created_at, id`` contract, which nothing asserted.
+
+    It is what makes the export's paging exact: without a total ordering a
+    page boundary could repeat or drop a row.
+    """
+    user = await make_user(db_session)
+    garment = await make_owned_garment(db_session, user=user)
+    newest = await make_fit_signal(
+        db_session, owned_garment=garment, created_at=datetime(2026, 8, 1, tzinfo=UTC)
+    )
+    oldest = await make_fit_signal(
+        db_session, owned_garment=garment, created_at=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+
+    listed = await FitSignalRepository(db_session).list_for_user(user.id)
+
+    assert [s.id for s in listed] == [oldest.id, newest.id]

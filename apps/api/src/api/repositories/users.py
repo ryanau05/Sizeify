@@ -18,6 +18,23 @@ class UserRepository(Repository[User, UUID]):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session, User)
 
+    async def lock(self, id: UUID) -> None:
+        """Take a row lock on one user, held to the end of the transaction.
+
+        Serializes writes that have to read-then-decide against that user's
+        rows — the closet ceiling is the caller: it counts garments and then
+        inserts, and without a lock two concurrent creates both read the same
+        pre-count and both proceed, so a closet could pass its maximum by as
+        many rows as there were requests in flight.
+
+        Locking the *user* row rather than the garments is what makes the
+        count trustworthy: there is no row yet for the garment being added, so
+        there is nothing else to lock, and ``SELECT ... FOR UPDATE`` on a row
+        that exists is the standard way to get a per-user critical section.
+        Scoped to one user, so it never serializes unrelated callers.
+        """
+        await self.session.execute(select(User.id).where(User.id == id).with_for_update())
+
     async def get_by_email(self, email: str) -> User | None:
         """Lookup by email, case-insensitively.
 

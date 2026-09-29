@@ -35,3 +35,37 @@ BUTTON_DOWN_DIMENSION_WEIGHTS: Mapping[str, float] = MappingProxyType(
         "cuff_circumference": 0.05,
     }
 )
+
+
+#: Weights by ``garment_category.id``. v1 seeds exactly one category, so this
+#: has one entry — but the lookup is real rather than a constant return, which
+#: is what makes "the weights depend on the category" true of the code and not
+#: just of the comment above.
+DIMENSION_WEIGHTS_BY_CATEGORY: Mapping[str, Mapping[str, float]] = MappingProxyType(
+    {"mens_button_down_shirt": BUTTON_DOWN_DIMENSION_WEIGHTS}
+)
+
+
+class UnknownCategoryError(LookupError):
+    """No weights are tuned for this ``category_id``.
+
+    Raised rather than falling back to the button-down table. A silent
+    fallback would rank a garment of one category against another's
+    priorities and still return a confident-looking size — the exact
+    silent degradation CLAUDE.md's five-place rule exists to prevent.
+    """
+
+    def __init__(self, category_id: str) -> None:
+        super().__init__(
+            f"no dimension weights tuned for category {category_id!r}; "
+            f"known: {sorted(DIMENSION_WEIGHTS_BY_CATEGORY)}"
+        )
+        self.category_id = category_id
+
+
+def weights_for_category(category_id: str) -> Mapping[str, float]:
+    """The tuned weights for ``category_id``, or raise ``UnknownCategoryError``."""
+    try:
+        return DIMENSION_WEIGHTS_BY_CATEGORY[category_id]
+    except KeyError as exc:
+        raise UnknownCategoryError(category_id) from exc

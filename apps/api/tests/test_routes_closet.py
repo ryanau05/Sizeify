@@ -37,7 +37,9 @@ from api.deps import get_session
 from api.main import create_app
 from api.models import GarmentCategory, OwnedGarment
 from api.repositories import GarmentCategoryRepository
+from api.repositories.owned_garments import OwnedGarmentRepository
 from api.repositories.refresh_tokens import RefreshTokenRepository
+from api.repositories.users import UserRepository
 from api.seeds.garment_categories import (
     MENS_BUTTON_DOWN_SHIRT_ID,
     seed_garment_categories,
@@ -894,3 +896,63 @@ async def test_both_validation_layers_use_one_error_vocabulary(
         for error in response.json()["detail"]:
             assert error["loc"][0] == "body"
             assert error["msg"]
+
+
+async def test_the_closet_ceiling_is_checked_under_a_lock(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Count and insert must be one critical section.
+
+    The count used to be read outside the transaction that inserts, making
+    this check-then-act: two concurrent creates both observed the same
+    pre-count and both proceeded, so a closet could pass its maximum by as
+    many rows as there were requests in flight.
+
+    A genuinely concurrent test would need two sessions on two connections,
+    which the SAVEPOINT harness cannot give. So this asserts the property that
+    makes the race impossible instead: the user's row is locked, and the count
+    is read, before any insert happens — an ordering that cannot hold if the
+    check sits outside the transaction.
+    """
+    events: list[str] = []
+    real_lock = UserRepository.lock
+    real_count = OwnedGarmentRepository.count_for_user
+    real_create = OwnedGarmentRepository.create
+
+    async def traced_lock(self: UserRepository, id: UUID) -> None:
+        events.append("lock")
+        return await real_lock(self, id)
+
+    async def traced_count(self: OwnedGarmentRepository, user_id: UUID) -> int:
+        events.append("count")
+        return await real_count(self, user_id)
+
+    async def traced_create(self: OwnedGarmentRepository, **kwargs: Any) -> OwnedGarment:
+        events.append("create")
+        return await real_create(self, **kwargs)
+
+    monkeypatch.setattr(UserRepository, "lock", traced_lock)
+    monkeypatch.setattr(OwnedGarmentRepository, "count_for_user", traced_count)
+    monkeypatch.setattr(OwnedGarmentRepository, "create", traced_create)
+
+    headers = await auth_headers(db_session)
+    created = await client.post(GARMENTS, json=garment_body(), headers=headers)
+
+    assert created.status_code == 201
+    assert events == ["lock", "count", "create"], events
+
+
+async def test_the_closet_ceiling_still_refuses_at_the_limit(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Moving the check inside the transaction must not stop it refusing."""
+    monkeypatch.setenv("MAX_CLOSET_GARMENTS", "1")
+    get_settings.cache_clear()
+    headers = await auth_headers(db_session)
+
+    first = await client.post(GARMENTS, json=garment_body(), headers=headers)
+    second = await client.post(GARMENTS, json=garment_body(), headers=headers)
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert "full" in second.json()["detail"]
