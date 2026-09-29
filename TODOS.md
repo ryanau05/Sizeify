@@ -2,105 +2,98 @@
 
 ## Open
 
-Two further reviews ran before the Phase 1 PR: a specialist pass (six defects,
-all fixed) and an adversarial pass (five more, all fixed — plus the two below
-that were re-rated from "defer" to "fix" because one authenticated account
-could reach them). See `docs/PROJECT_PLAN.md`.
+Three items, all of which need something that does not exist yet. Everything
+else from the three Phase 1 reviews is closed — see Completed below.
 
-The items below remain open. None is reachable by an honest v1 client at v1
-scale, and none is reachable by a *hostile* one either — that second test was
-added after the adversarial pass showed the first was not sufficient on its
-own.
-
-### P2 — bound before real traffic
-
-- **`GET /me/export` is unbounded by design.** `limit=None` on all three
-  queries is correct for Art. 15 — an export that stopped at 100 rows would be
-  a compliance bug — but signals and recommendations have no ceiling, and every
-  row is materialized into Pydantic models in one synchronous stretch. Page it
-  internally and stream the response before any account gets large.
-- **`POST /auth/login` holds a DB connection across argon2.** The lookup
-  autobegins the transaction, which then stays open across the ~75-250 ms
-  verify and any rehash. The default pool is 5 + 10 overflow, so ~15 concurrent
-  logins queue everything else behind connection checkout. `signup` already
-  avoids this deliberately; `login` should do the verify before opening the
-  block.
-
-### P3 — correctness of contract, not of behaviour
-
-- **`RecommendationExport.confidence` is a `Decimal`,** which Pydantic v2
-  serializes as a JSON *string*, while `magnitude_cm` on the same document is a
-  `float` and ships as a number. `GET /me/export` emits `"confidence": "0.850"`
-  next to `"magnitude_cm": 1.5`.
-- **The PATCH explicit-null 422 does not name the field in `loc`.** A
-  `mode="before"` model validator cannot attach a field location, so the name
-  survives only inside the prose message and the client cannot highlight the
-  input.
-- **Two error-code vocabularies on one endpoint.** Hand-built 422s use
-  Pydantic-v1 dotted strings (`value_error.measurement.<kind>`); FastAPI's own
-  use v2 snake_case and carry extra keys. A client switching on `type` has to
-  learn both.
-- **`SignupAccepted.detail` is a single-valued `Literal`,** so it publishes as
-  a one-member enum and generated clients pin the exact sentence — making a
-  reword a breaking schema change. A plain `str` with a default gives the same
-  fixed-body guarantee.
-- **`alembic upgrade --sql` is broken for the whole chain.** `0005`'s duplicate
-  check and `0004`'s tombstone check call `op.get_bind().execute(...)`, which
-  returns `None` in offline mode, so both die with an `AttributeError`. Rules
-  out the "generate SQL, have a DBA apply it" path.
-- **`uq_user_email_lower` subsumes `user_email_key`.** If `lower(email)` is
-  unique then `email` is too. Harmless at v1 scale, but it doubles unique-check
-  work on signup and leaves two constraint names an `IntegrityError` handler
-  can see.
-- **`_weights_for(fit_profile)` never reads its argument** — it returns the
-  module constant unconditionally. Either key on `category_id` or drop the
-  parameter.
-- **`FitSignalRepository.list_for_user`'s `limit` is untested,** and its
-  `ORDER BY created_at, id` contract is unasserted. Its two sibling
-  repositories both got paging tests on this branch.
-
-- **Refresh tokens are never collected.** A row is inserted on every login and
-  every rotation; `mark_revoked` and `revoke_all_for_user` only set
-  `revoked_at`, and there is no delete path or retention job. The table grows
-  monotonically with login volume. `rotate`'s own comment ("could be replay
-  after retention cleanup") assumes a cleanup that does not exist. Needs a
-  retention window and a job — Phase 8 shaped, alongside the Redis limiter.
-- **`POST /closet/garments` ceiling is TOCTOU.** `count_for_user` is read
-  outside the transaction that inserts, so concurrent creates all observe the
-  same pre-count and can overshoot `max_closet_garments`. Soft guard; overshoot
-  is small and bounded by concurrency.
-- **`"/me"` is matched as a substring prefix,** so a future `/metrics` or
-  `/members` route would be silently swept into the authenticated limiter.
-- **No `Cache-Control: no-store`** on `/auth/login`, `/auth/refresh` (token
-  pairs, RFC 6749 §5.1) or `GET /me/export` (a full PII dump).
-- **`_client_ip` does not normalize addresses,** so `2001:db8::1` and its
-  expanded form are different bucket keys. Only reachable through
-  `X-Forwarded-For` from a trusted peer, so it needs a proxy misconfiguration
-  to matter.
-- **`_signal_for` silently keeps only the last untagged signal** per dimension.
-  Latest-wins is defensible; it is undocumented, and a user who records five
-  chest verdicts has four discarded with no indication.
-- **`synthesize_feedback_text`'s docstring example uses `too_long`,** which is
-  not in the `Verdict` enum — the length axis only has `slightly_short` /
-  `too_short`. Harmless, but the example is unreachable through the API.
-
-### P4 — when there is production data
-
-- **Migration `0003` takes ACCESS EXCLUSIVE with no `lock_timeout`,** after
-  holding row locks from two whole-table UPDATEs — the classic deadlock shape
-  against a live app transaction. Irrelevant on an empty table.
-- **Both new indexes build non-concurrently.** Correct now (the tables are
-  trivially small, and CONCURRENTLY cannot run inside Alembic's transactional
-  DDL). The first index added after there is real data needs
-  `postgresql_concurrently=True` inside an `autocommit_block()`.
-- **No test times the PRD budgets.** §10.1's "<4 min to first garment" and
-  §9.2's share-sheet p50/p95 are unmeasured; the per-step budgets are only
-  ever checked by reading the code.
+- **`GET /me/export` still buffers the whole document.** The reads are paged
+  now, so the event loop gets a yield point every few milliseconds instead of
+  one after half a second (measured: 486 ms uninterrupted at the ceiling the
+  caps allow). Peak memory is unchanged and still proportional to the account,
+  because the response is one JSON object and every row has to be in it.
+  Bounding *that* means streaming the body, which needs a database session
+  that outlives the handler — and routes are barred from holding one
+  (`routes/ruff.toml`), so it belongs in a `services/export.py` alongside the
+  session-lifetime care a `StreamingResponse` generator needs. Worth doing
+  when an account can plausibly get large; not before.
+- **Refresh-token retention has no scheduler.** The delete path exists and is
+  tested (`RefreshTokenRepository.delete_expired`), and
+  `python -m api.maintenance.prune_refresh_tokens` runs it today from cron.
+  What is missing is the job queue that should own it — `arq` on Redis, which
+  CLAUDE.md puts in Phase 8 alongside the Redis-backed rate limiter. The
+  entry point is written so that step is a matter of calling `prune()` from a
+  worker.
+- **Three of PRD §9.2's five budgets are untimed,** because the code they
+  budget does not exist: resolve is Phase 5, the scraper is Phase 2, push is
+  Phase 7, and the end-to-end p50 < 3 s / p95 < 5 s needs the share-sheet
+  endpoint from Phase 6. The two this repository owns are now asserted in
+  `tests/test_prd_latency_budgets.py` — profile build at 126x headroom under
+  its 100 ms line, matching at ~11,000x under its 300 ms one. PRD §10.1's
+  "<4 minutes to first garment" is a UX measurement over a human using the
+  mobile client and is not observable from the backend at all.
 
 ## Completed
 
 **All 18 findings from the first pre-landing review are closed** (17 on
-2026-09-11, the last on 2026-09-17).
+2026-09-11, the last on 2026-09-17), and **17 of the 20 items the second
+and third reviews left open** were closed on 2026-09-29.
+
+### Closed 2026-09-29
+
+Ordered as they were worked, by importance:
+
+- **Login no longer pins a pooled connection across argon2.** The read
+  autobegins a transaction and SQLAlchemy holds the connection until it ends,
+  so the ~75-250 ms hash ran with one checked out; the pool is 5 + 10, so ~15
+  concurrent logins exhausted it and everything else queued behind work that
+  was not using its connection. The lookup commits before hashing — verified
+  to return the connection, checked-out 1 -> 0 — and it has to be a commit
+  rather than a rollback or the test harness's SAVEPOINT would take the
+  fixture rows with it.
+- **`GET /me/export` pages its reads** (the remaining half is above).
+- **`Cache-Control: no-store` on both token endpoints and the export** (RFC
+  6749 §5.1). Not on the 401 path: FastAPI builds a fresh response for a
+  raised `HTTPException` and discards what a dependency wrote, which is
+  acceptable because a 401 carries no token.
+- **Limiter prefixes match path boundaries,** so a future `/metrics` or
+  `/members` is no longer swept into the authenticated bucket by `"/me"`.
+- **Bucket keys are normalized,** so one IPv6 host cannot mint a bucket per
+  spelling.
+- **`confidence` ships as a JSON number,** not a string beside
+  `magnitude_cm`'s number in the same document.
+- **The PATCH explicit-null 422 names its field** in `loc`, one entry per
+  field, via a field validator rather than a model one.
+- **One error-code vocabulary per endpoint** — the hand-built codes are
+  snake_case like Pydantic's. Nothing had asserted on them, which is why
+  changing all three broke no test; there is a test now.
+- **`SignupAccepted.detail` is a defaulted `str`,** not a one-member enum
+  pinning the exact sentence in every generated client.
+- **`alembic upgrade --sql` works for the whole chain.** 0004 and 0005 emit
+  their data guards *as SQL* rather than skipping them, so the safety check
+  survives into the generated script — verified by rendering 0005 against a
+  database holding two case-variant addresses and watching psql refuse with
+  the migration's own wording.
+- **`user_email_key` is gone** (migration 0007). `uq_user_email_lower`
+  subsumed it, and keeping both cost two unique checks per signup and left
+  the `IntegrityError` handler guessing which name would fire.
+- **Migration 0003 sets `lock_timeout`,** so a blocked `SET NOT NULL` fails
+  while someone is watching instead of queueing every reader behind it.
+- **0006 records the `CONCURRENTLY` rule** where the next index author will
+  read it, including that a failed build leaves an INVALID index.
+- **The closet ceiling is a per-user critical section.** Count and insert are
+  in one transaction behind a `SELECT ... FOR UPDATE` on the user row;
+  before, two concurrent creates both read the same pre-count and both
+  proceeded.
+- **`_weights_for` dispatches on `category_id`** instead of ignoring its
+  argument, and an untuned category raises rather than silently ranking
+  against button-down priorities.
+- **`FitSignalRepository.list_for_user` has paging and ordering tests** — it
+  is what the export now pages through, so an off-by-one would truncate a
+  compliance response.
+- **`_signal_for`'s latest-wins rule is documented,** with why it is right
+  and where it would change.
+- **A docstring example no longer uses `too_long`,** which is not a `Verdict`.
+
+Each fix has a regression test confirmed to fail against the pre-fix code.
 
 ### P0
 

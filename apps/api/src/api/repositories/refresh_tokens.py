@@ -10,11 +10,11 @@ them all:
   (TKT-P1-06 acceptance criterion) and by ``DELETE /me`` (TKT-P1-18).
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models import RefreshToken
@@ -78,3 +78,32 @@ class RefreshTokenRepository(Repository[RefreshToken, UUID]):
             .values(revoked_at=datetime.now(UTC))
         )
         await self.session.flush()
+
+    async def delete_expired(self, *, now: datetime | None = None, ttl_seconds: int) -> int:
+        """Delete rows that can no longer authenticate anything. Returns the count.
+
+        A row is inserted on every login and every rotation, and until now
+        nothing ever removed one — ``mark_revoked`` and ``revoke_all_for_user``
+        only set ``revoked_at``. The table grew monotonically with login
+        volume, and ``get_by_hash`` walks a unique index that only ever got
+        larger. ``rotate``'s own comment about "replay after retention
+        cleanup" described a cleanup that did not exist.
+
+        The cutoff is ``issued_at`` plus the refresh TTL, so a row goes only
+        once the JWT it tracks has expired on its own. That ordering is what
+        makes deletion safe: an expired token is refused by ``decode`` before
+        the row is ever consulted, so the row can no longer change any
+        decision — including the replay alarm, which cannot fire for a token
+        that will not decode.
+
+        Revoked-but-unexpired rows are deliberately kept. Those are exactly
+        the ones a replay would present, and deleting one early would turn a
+        detected replay into an ordinary "not recognized" 401, losing the
+        signal that a token was stolen.
+        """
+        cutoff = (now or datetime.now(UTC)) - timedelta(seconds=ttl_seconds)
+        result = await self.session.execute(
+            delete(RefreshToken).where(RefreshToken.issued_at < cutoff)
+        )
+        await self.session.flush()
+        return cast(CursorResult[Any], result).rowcount

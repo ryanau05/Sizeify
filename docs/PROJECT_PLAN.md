@@ -93,8 +93,8 @@ Exit criterion: a fresh clone + `make bootstrap` (or equivalent) gets a contribu
 Goal: a backend that can store a user's closet and run the matching engine in isolation.
 
 > **Status:** all 20 tickets in `PHASE_1_TICKETS.md` are delivered, and the exit
-> criterion passes as `apps/api/tests/integration/test_phase1_exit.py`. 522 tests,
-> 99% coverage on `api.domain`, ruff/mypy/alembic clean. Migrations `0001`–`0006`.
+> criterion passes as `apps/api/tests/integration/test_phase1_exit.py`. 543 tests,
+> 99% coverage on `api.domain`, ruff/mypy/alembic clean. Migrations `0001`–`0007`.
 >
 > Two further reviews ran before the PR — a specialist pass and an
 > adversarial pass — finding thirteen defects between them that the first

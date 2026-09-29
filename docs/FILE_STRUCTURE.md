@@ -66,6 +66,7 @@ apps/api/
 │       ├── config.py            # Pydantic Settings: DB URL, Redis, Anthropic key, JWT secret
 │       ├── deps.py              # FastAPI dependencies: db session, current user
 │       ├── rate_limit.py        # token buckets for /auth/* and /closet/*,/me (Redis in Phase 8)
+│       ├── maintenance/          # scheduled tasks (prune_refresh_tokens); arq-owned in Phase 8
 │       ├── logging.py           # Structured JSON logging config
 │       │
 │       ├── models/              # SQLAlchemy ORM models, one file per entity
