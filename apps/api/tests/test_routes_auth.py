@@ -637,3 +637,64 @@ async def test_signup_does_not_swallow_an_unrelated_constraint_violation(
 
     with pytest.raises(IntegrityError):
         await client.post("/auth/signup", json=signup_body(email="unrelated@example.com"))
+
+
+async def test_login_holds_no_db_connection_across_argon2(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hashing must not pin a pooled connection.
+
+    Reading the user autobegins a transaction, and SQLAlchemy keeps the
+    connection checked out until it ends — so verifying inside it held one for
+    the whole ~75-250 ms hash. The engine pool is 5 with 10 overflow, so ~15
+    concurrent logins exhausted it and every other request queued on checkout
+    behind work that was not using its connection.
+
+    Asserts the session holds no transaction at the moment argon2 runs, which
+    is what "no connection is checked out" looks like from here. Also asserts
+    the login still succeeds: releasing the read with a rollback rather than a
+    commit would take the test's own fixture row with it.
+    """
+    states: list[bool] = []
+    real_verify = auth_password.verify_async
+
+    async def recording_verify(submitted: str, stored: str) -> bool:
+        states.append(db_session.in_transaction())
+        return await real_verify(submitted, stored)
+
+    monkeypatch.setattr(auth_password, "verify_async", recording_verify)
+    user = await make_user(db_session, email="pooled@example.com")
+
+    response = await client.post(
+        "/auth/login", json={"email": user.email, "password": TEST_PASSWORD}
+    )
+
+    assert response.status_code == 200, response.text
+    assert states == [False], "a transaction was open across the argon2 verify"
+
+
+async def test_login_still_rehashes_when_parameters_were_raised(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Moving the hashing out of the transaction must not drop the upgrade.
+
+    The rehash is computed outside and written inside, so this pins that the
+    two halves still meet: a hash flagged as stale is replaced in the database
+    by the time the response is returned.
+    """
+    user = await make_user(db_session, email="rehash-split@example.com")
+    original_hash = user.password_hash
+
+    monkeypatch.setattr(auth_password, "needs_rehash_async", _always_needs_rehash)
+
+    response = await client.post(
+        "/auth/login", json={"email": user.email, "password": TEST_PASSWORD}
+    )
+
+    assert response.status_code == 200
+    stored = await db_session.scalar(select(User.password_hash).where(User.id == user.id))
+    assert stored != original_hash, "the upgraded hash never reached the database"
+
+
+async def _always_needs_rehash(stored_hash: str) -> bool:
+    return True

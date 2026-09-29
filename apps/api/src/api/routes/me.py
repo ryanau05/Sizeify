@@ -35,9 +35,12 @@ the worst way for this to break.
 """
 
 import logging
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
 
 from api.auth import password as auth_password
 from api.deps import (
@@ -64,6 +67,51 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/me", tags=["me"])
 
 
+#: Rows fetched and converted per pass in ``_paged``.
+#:
+#: The export is complete by law, so the *total* is whatever the account
+#: holds — but reading and converting it in one go was 486 ms of uninterrupted
+#: event-loop time at the ceiling the caps now allow (500 garments x 200
+#: signals), measured, plus ~103 MiB of Pydantic models before JSON encoding.
+#: Every other in-flight request waited out that whole block, the share-sheet
+#: path (PRD §9.2, p95 < 5 s) included.
+#:
+#: Paging does not make the document smaller; it makes the work interruptible.
+#: Each pass is ~5 ms and there is an ``await`` between them, so the loop gets
+#: a yield point roughly every 5 ms instead of one after half a second. 1,000
+#: is large enough that the per-round-trip cost stays noise and small enough
+#: that a pass is short.
+_EXPORT_PAGE_SIZE = 1_000
+
+
+async def _paged[RowT: BaseModel](
+    fetch: Callable[[int, int], Awaitable[Sequence[Any]]],
+    model: type[RowT],
+) -> list[RowT]:
+    """Read every row through ``fetch``, a page at a time, as ``model``.
+
+    ``fetch`` takes ``(limit, offset)``. Both repositories order totally
+    (``created_at`` then ``id``), so a page boundary cannot repeat or drop a
+    row even as the account changes underneath — which matters here because
+    this walk is not inside one transaction.
+
+    Peak memory is still the size of the finished document: the response is a
+    single JSON object and every row has to be in it. Bounding *that* means
+    streaming the body, which needs a session outliving the handler — and
+    route handlers are barred from holding one (``routes/ruff.toml``), so it
+    belongs in a service. Recorded in TODOS.md; this fixes the part that hurts
+    other requests.
+    """
+    rows: list[RowT] = []
+    offset = 0
+    while True:
+        page = await fetch(_EXPORT_PAGE_SIZE, offset)
+        rows.extend(model.model_validate(row) for row in page)
+        if len(page) < _EXPORT_PAGE_SIZE:
+            return rows
+        offset += _EXPORT_PAGE_SIZE
+
+
 @router.get("/export", responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE})
 async def export(
     user: CurrentUser,
@@ -79,20 +127,25 @@ async def export(
     rows. ``user`` comes from the bearer token, never from a parameter —
     there is no way to ask for somebody else's export.
     """
-    closet = await garments.list_for_user(user.id, include_deleted=True, limit=None)
-
     return ExportResponse(
         exported_at=datetime.now(UTC),
         user=UserExport.model_validate(user),
-        closet=[OwnedGarmentExport.model_validate(row) for row in closet],
-        signals=[
-            FitSignalResponse.model_validate(row)
-            for row in await signals.list_for_user(user.id, limit=None)
-        ],
-        recommendations=[
-            RecommendationExport.model_validate(row)
-            for row in await recommendations.list_for_user(user.id, limit=None)
-        ],
+        closet=await _paged(
+            lambda limit, offset: garments.list_for_user(
+                user.id, include_deleted=True, limit=limit, offset=offset
+            ),
+            OwnedGarmentExport,
+        ),
+        signals=await _paged(
+            lambda limit, offset: signals.list_for_user(user.id, limit=limit, offset=offset),
+            FitSignalResponse,
+        ),
+        recommendations=await _paged(
+            lambda limit, offset: recommendations.list_for_user(
+                user.id, limit=limit, offset=offset
+            ),
+            RecommendationExport,
+        ),
     )
 
 

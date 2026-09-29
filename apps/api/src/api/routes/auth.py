@@ -36,6 +36,7 @@ the transaction for exactly that reason.
 
 import logging
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -49,7 +50,6 @@ from api.deps import (
     RefreshTokenRepositoryDep,
     UserRepositoryDep,
 )
-from api.models import User
 from api.repositories.base import transaction
 from api.schemas.auth import (
     LoginRequest,
@@ -103,8 +103,14 @@ def _token_pair(access: str, refresh: str, settings: Settings) -> TokenPair:
     )
 
 
-async def _verify_credentials(user: User | None, submitted_password: str) -> User:
-    """Return ``user`` if the password checks out, else raise 401.
+async def _verify_credentials(
+    user_id: UUID | None, stored_hash: str, submitted_password: str
+) -> None:
+    """Return quietly if the password checks out, else raise 401.
+
+    Takes the id and hash as plain values rather than a ``User`` so the
+    caller can release its database connection before paying for argon2 —
+    an ORM instance would risk a lazy-load against the released session.
 
     Always runs exactly one argon2 verify — against
     ``_DUMMY_PASSWORD_HASH`` when the user is unknown — so both branches
@@ -118,9 +124,8 @@ async def _verify_credentials(user: User | None, submitted_password: str) -> Use
     budget to hit (PRD §9.2). CLAUDE.md bans a *sync DB call* on that path
     for the same reason; 250 ms of hashing is the larger offender.
     """
-    candidate_hash = user.password_hash if user is not None else _DUMMY_PASSWORD_HASH
-    matched = await auth_password.verify_async(submitted_password, candidate_hash)
-    if user is None or not matched:
+    matched = await auth_password.verify_async(submitted_password, stored_hash)
+    if user_id is None or not matched:
         # No email in the payload: a failed-login log that records the address
         # tried is a credential-stuffing target list sitting in the log store
         # (PRD §11 data minimization). ``known_account`` is enough to tell a
@@ -128,12 +133,11 @@ async def _verify_credentials(user: User | None, submitted_password: str) -> Use
         logger.warning(
             "auth.login.failed",
             extra={
-                "known_account": user is not None,
-                "user_id": str(user.id) if user is not None else None,
+                "known_account": user_id is not None,
+                "user_id": str(user_id) if user_id is not None else None,
             },
         )
         raise _invalid_credentials()
-    return user
 
 
 _INVALID_CREDENTIALS_RESPONSE: dict[int | str, dict[str, Any]] = {
@@ -262,19 +266,51 @@ async def login(
     refresh_tokens: RefreshTokenRepositoryDep,
     settings: SettingsDep,
 ) -> TokenPair:
-    """Exchange email + password for a fresh token pair."""
-    user = await _verify_credentials(await users.get_by_email(body.email), body.password)
+    """Exchange email + password for a fresh token pair.
+
+    The argon2 work deliberately happens with **no database connection
+    held**. Reading the user autobegins a transaction, and SQLAlchemy keeps
+    the pooled connection checked out until that transaction ends — so
+    verifying inside it pinned a connection for the whole ~75-250 ms hash.
+    The engine's pool is 5 with 10 overflow, meaning ~15 concurrent logins
+    exhausted it and every other request, share-sheet path included, queued
+    on connection checkout behind work that was not using its connection.
+
+    So the lookup is committed before hashing. Committing a read-only
+    transaction is how SQLAlchemy ends one: it returns the connection to the
+    pool (verified: checked-out count 1 -> 0) and, under the test harness's
+    ``join_transaction_mode="create_savepoint"``, RELEASEs the savepoint
+    rather than discarding fixture rows the way a rollback would.
+
+    ``signup`` has always hashed outside its transaction; this brings login
+    into line.
+    """
+    user = await users.get_by_email(body.email)
+
+    # Everything the rest of this handler needs, as plain values — so no
+    # attribute access can lazy-load against a session we have just released.
+    user_id = user.id if user is not None else None
+    stored_hash = user.password_hash if user is not None else _DUMMY_PASSWORD_HASH
+    await users.session.commit()
+
+    await _verify_credentials(user_id, stored_hash, body.password)
+    assert user_id is not None  # _verify_credentials raises 401 when it is None
+
+    # Login is the only moment the plaintext exists, so it is the only place a
+    # hash produced with since-raised parameters can be upgraded. Computed out
+    # here for the same reason as the verify; only the write goes in the
+    # transaction below, alongside the token issue, so either both land or
+    # neither.
+    upgraded: str | None = None
+    if await auth_password.needs_rehash_async(stored_hash):
+        upgraded = await auth_password.hash_async(body.password)
 
     async with transaction(users.session):
-        # Login is the only moment the plaintext exists, so it is the only
-        # place a hash produced with since-raised parameters can be upgraded.
-        # Same transaction as the token issue: either both land or neither.
-        if await auth_password.needs_rehash_async(user.password_hash):
-            upgraded = await auth_password.hash_async(body.password)
-            await users.update(user.id, password_hash=upgraded)
-            logger.info("auth.password.rehashed", extra={"user_id": str(user.id)})
+        if upgraded is not None:
+            await users.update(user_id, password_hash=upgraded)
+            logger.info("auth.password.rehashed", extra={"user_id": str(user_id)})
 
-        access, refresh = await auth_jwt.issue_pair(user.id, refresh_tokens)
+        access, refresh = await auth_jwt.issue_pair(user_id, refresh_tokens)
 
     return _token_pair(access, refresh, settings)
 
