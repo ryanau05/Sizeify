@@ -47,9 +47,15 @@ API_ROOT = Path(__file__).resolve().parents[2]
 #: deliberate act, not a silent one.
 HEAD_REVISION = "0007_drop_email_uq"
 
-#: Offline rendering never connects, so any well-formed URL will do. Named
-#: rather than reusing the configured one to make that independence obvious.
-_OFFLINE_PLACEHOLDER_URL = "postgresql+asyncpg://render:render@offline.invalid:5432/render"
+#: Offline rendering never opens a connection — it only needs a URL that
+#: parses, so that the dialect is known and the SQL can be generated for it.
+#:
+#: Deliberately carries no credentials. They would be ignored, and a
+#: ``user:password@host`` literal in the source is the shape every secret
+#: scanner is built to find — correctly, since it cannot know this one is a
+#: placeholder. Named rather than reusing the configured URL so the
+#: independence from any real database is obvious at a glance.
+_OFFLINE_PLACEHOLDER_URL = "postgresql+asyncpg://offline.invalid:5432/render"
 
 #: The last revision before credentials/consent — the point a pre-auth
 #: database would have been sitting at when TKT-P1-07 shipped.
