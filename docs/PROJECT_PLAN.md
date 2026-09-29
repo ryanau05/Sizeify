@@ -201,6 +201,13 @@ Exit criterion: integration test seeds a closet with five garments, calls the ma
 
 Goal: ten brands scraped reliably, with a daily synthetic test detecting HTML drift before users do.
 
+> **Tickets: `docs/PHASE_2_TICKETS.md`** — 25 tickets across three tracks. Two
+> things it settles that this section leaves open: the scrape budget is **1.5 s**
+> (PRD §9.2, not §7.3's 1 s — §9.2 is the section whose budgets sum to the 2.5 s
+> p50), and `brand_product.size_chart` is **normalized to cm and to the canonical
+> dimension names** at the scraper boundary so `domain/matching.py` can compare it
+> to `owned_garment.measurements` without a translation layer.
+
 Deliverables:
 - `apps/api/src/scrapers/base.py` defines the uniform interface (PRD §9.3). Every brand module conforms.
 - One module per brand from PRD §7.6: Uniqlo, J.Crew, Bonobos, Everlane, Banana Republic, Brooks Brothers, Charles Tyrwhitt, Mr. Porter, Spier & Mackay, Proper Cloth.
