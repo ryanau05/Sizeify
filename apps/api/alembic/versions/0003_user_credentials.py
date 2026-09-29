@@ -41,7 +41,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 #: Set to ``1`` to allow a downgrade that destroys data.
 DESTRUCTIVE_OPT_IN_ENV = "ALEMBIC_ALLOW_DESTRUCTIVE_DOWNGRADE"
@@ -80,8 +80,27 @@ LOCKED_PASSWORD_HASH = "!locked-no-password-set"
 SYNTHETIC_CONSENT_AT = datetime(1970, 1, 1, tzinfo=UTC)
 
 
+#: Fail fast rather than queue behind a long-running transaction.
+#:
+#: This migration's ``SET NOT NULL`` steps take ACCESS EXCLUSIVE on ``user``,
+#: and it reaches them holding row locks from two whole-table UPDATEs — the
+#: classic deadlock shape against a live application transaction that already
+#: holds ACCESS SHARE and then tries to update one of those rows. Without a
+#: timeout the ALTER simply waits, and every reader queues behind it, so a
+#: migration that cannot proceed takes the table down while it cannot
+#: proceed.
+#:
+#: Three seconds is short enough that a blocked deploy fails while someone is
+#: still watching it, and long enough to ride out ordinary contention. On the
+#: empty tables v1 has, it is never reached.
+LOCK_TIMEOUT = "3s"
+
+
 def upgrade() -> None:
     """Upgrade schema."""
+    if not context.is_offline_mode():
+        op.execute(sa.text(f"SET lock_timeout = '{LOCK_TIMEOUT}'"))
+
     op.add_column("user", sa.Column("password_hash", sa.Text(), nullable=True))
     op.add_column(
         "user",

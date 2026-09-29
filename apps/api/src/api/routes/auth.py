@@ -149,10 +149,15 @@ _INVALID_CREDENTIALS_RESPONSE: dict[int | str, dict[str, Any]] = {
 }
 
 
-#: The two constraints that mean "this address is already registered":
-#: 0001's exact-match UNIQUE on ``email`` and 0005's functional unique index
-#: on ``lower(email)``.
-_EMAIL_UNIQUE_CONSTRAINTS = frozenset({"user_email_key", "uq_user_email_lower"})
+#: The constraint that means "this address is already registered".
+#:
+#: Just the one since migration 0007: ``uq_user_email_lower`` is the single
+#: authority on address uniqueness, matching the rule the code enforces
+#: (``UserRepository.get_by_email`` compares ``lower(email)``). 0001's
+#: exact-match ``user_email_key`` was redundant against it and is gone, so
+#: there is no longer a question of which of two indexes Postgres happened to
+#: evaluate first.
+_EMAIL_UNIQUE_CONSTRAINTS = frozenset({"uq_user_email_lower"})
 
 
 def _constraint_name(exc: IntegrityError) -> str | None:

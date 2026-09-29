@@ -31,13 +31,29 @@ index from 0001 still serves the matching engine's per-category read.
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 # revision identifiers, used by Alembic.
 revision: str = "0004_owned_garment_soft_delete"
 down_revision: str | Sequence[str] | None = "0003_user_credentials"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+
+#: The tombstone check, as SQL that raises where it runs. See the equivalent
+#: in ``0005`` for why the guard is emitted rather than skipped offline.
+_OFFLINE_TOMBSTONE_GUARD = """
+DO $$
+DECLARE tombstoned bigint;
+BEGIN
+    SELECT count(*) INTO tombstoned FROM owned_garment WHERE deleted_at IS NOT NULL;
+    IF tombstoned > 0 THEN
+        RAISE EXCEPTION '% soft-deleted garment(s) would come back as live closet rows. '
+            'Hard-delete them first (DELETE FROM owned_garment WHERE deleted_at IS NOT NULL) '
+            'if that is intended, then re-run this downgrade.', tombstoned;
+    END IF;
+END $$
+"""
 
 
 def upgrade() -> None:
@@ -67,6 +83,15 @@ def downgrade() -> None:
     loses data, keeping them resurrects it — so this refuses while any exist
     and leaves the choice to a human.
     """
+    if context.is_offline_mode():
+        # No connection to count through in ``--sql`` mode. Emit the guard so
+        # it still runs where the script is applied, rather than rendering a
+        # downgrade whose safety check silently vanished.
+        op.execute(_OFFLINE_TOMBSTONE_GUARD)
+        op.drop_index("ix_owned_garment_user_id_active", table_name="owned_garment")
+        op.drop_column("owned_garment", "deleted_at")
+        return
+
     tombstoned = (
         op.get_bind()
         .execute(sa.text("SELECT count(*) FROM owned_garment WHERE deleted_at IS NOT NULL"))

@@ -45,7 +45,11 @@ API_ROOT = Path(__file__).resolve().parents[2]
 #: The revision ``upgrade head`` must land on. Hard-coded rather than read back
 #: from the scripts so that adding a migration without updating this test is a
 #: deliberate act, not a silent one.
-HEAD_REVISION = "0006_fit_signal_ix"
+HEAD_REVISION = "0007_drop_email_uq"
+
+#: Offline rendering never connects, so any well-formed URL will do. Named
+#: rather than reusing the configured one to make that independence obvious.
+_OFFLINE_PLACEHOLDER_URL = "postgresql+asyncpg://render:render@offline.invalid:5432/render"
 
 #: The last revision before credentials/consent — the point a pre-auth
 #: database would have been sitting at when TKT-P1-07 shipped.
@@ -266,3 +270,40 @@ def test_throwaway_database_is_never_the_configured_one(database_url: str) -> No
     assert make_url(throwaway.render_as_string(hide_password=False)).database == (
         f"{configured.database}{THROWAWAY_SUFFIX}"
     )
+
+
+def test_the_whole_chain_renders_as_offline_sql() -> None:
+    """``alembic upgrade --sql`` must work for every migration.
+
+    Offline mode renders the chain to a script for a human to apply — the
+    "generate SQL, have a DBA review and run it" path. There is no connection
+    to query, so ``op.get_bind().execute(...)`` returns ``None``, and 0005's
+    duplicate-address check and 0004's tombstone check both died on it with an
+    ``AttributeError`` that took the whole chain's rendering with them.
+
+    Both now emit their guard as SQL instead of skipping it, so the safety
+    check survives into the script and raises where it is applied. Skipping
+    would have been worse than the crash: a script that creates a UNIQUE index
+    which then fails at apply time with Postgres's own terse message, against
+    a database the author could not inspect.
+    """
+    output = _alembic("upgrade", "base:head", "--sql", url=_OFFLINE_PLACEHOLDER_URL)
+
+    assert "Traceback" not in output, output[-2000:]
+    assert "AttributeError" not in output, output[-2000:]
+    # The guards are in the script, not merely absent from the errors.
+    assert "RAISE EXCEPTION" in output
+    assert output.count("CREATE TABLE") >= 6
+
+
+def test_offline_sql_carries_the_duplicate_address_guard() -> None:
+    """0005's gate must reach the generated script, with its explanation."""
+    output = _alembic(
+        "upgrade",
+        "0004_owned_garment_soft_delete:0005_user_email_ci",
+        "--sql",
+        url=_OFFLINE_PLACEHOLDER_URL,
+    )
+
+    assert "exist more than once" in output
+    assert "uq_user_email_lower" in output
