@@ -447,3 +447,50 @@ def test_overflow_keys_share_one_budget_and_the_table_stays_bounded(
     assert len(limiter._buckets) <= 20 + 1, "table grew past the cap"
     assert rate_limit._OVERFLOW_KEY in limiter._buckets
     assert any(o is not None for o in outcomes), "overflow arrivals were never throttled"
+
+
+def test_a_prefix_does_not_match_a_longer_sibling_route() -> None:
+    """``"/me"`` guards ``/me`` and ``/me/...``, not ``/metrics``.
+
+    The prefixes were matched with a bare ``startswith``, so a future
+    ``/metrics`` or ``/members`` route would have been swept into the
+    authenticated limiter silently — keyed by a credential it may not even
+    require, and counted against a budget nobody meant to apply to it.
+    """
+    middleware = _middleware()
+    middleware._path_prefixes = ("/closet/", "/me")
+    middleware._path_subtrees = ("/closet/", "/me/")
+    middleware._exact_paths = frozenset({"/closet", "/me"})
+
+    assert middleware._guards("/me")
+    assert middleware._guards("/me/export")
+    assert middleware._guards("/closet/garments")
+    assert not middleware._guards("/metrics")
+    assert not middleware._guards("/members")
+    assert not middleware._guards("/closeted")
+
+
+def test_one_address_is_one_bucket_however_it_is_spelled() -> None:
+    """IPv6 has many spellings of one host; a key must have one.
+
+    Only reachable through ``X-Forwarded-For`` from a trusted peer, so it
+    takes a proxy that does not normalize — but where it applies, an
+    un-normalized key let one caller mint a fresh full bucket per spelling,
+    which is the key-minting shape the limiter exists to prevent.
+    """
+    middleware = _middleware(["10.0.0.0/8"])
+
+    spellings = {
+        middleware._client_ip(_scope("10.0.0.5", "2001:db8::1")),
+        middleware._client_ip(_scope("10.0.0.5", "2001:0db8:0000:0000:0000:0000:0000:0001")),
+        middleware._client_ip(_scope("10.0.0.5", "2001:DB8::1")),
+    }
+
+    assert spellings == {"2001:db8::1"}, spellings
+
+
+def test_an_unparseable_forwarded_entry_is_billed_verbatim() -> None:
+    """Normalization must not invent a key for something it cannot parse."""
+    middleware = _middleware(["10.0.0.0/8"])
+
+    assert middleware._client_ip(_scope("10.0.0.5", "not-an-address")) == "not-an-address"

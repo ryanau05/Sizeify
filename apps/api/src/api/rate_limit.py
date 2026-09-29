@@ -235,7 +235,16 @@ class RateLimitMiddleware:
     ) -> None:
         self.app = app
         self._limiter = limiter
+        # A prefix guards either an exact path or a subtree beneath it —
+        # never a longer sibling name. Matching "/me" with ``startswith``
+        # alone also swept up "/metrics" and "/members", so a future route
+        # would have landed in the authenticated limiter silently, keyed by a
+        # credential it may not even require.
         self._path_prefixes = tuple(path_prefixes)
+        self._path_subtrees = tuple(
+            prefix if prefix.endswith("/") else f"{prefix}/" for prefix in path_prefixes
+        )
+        self._exact_paths = frozenset(prefix.rstrip("/") for prefix in path_prefixes)
         self._trusted_proxies = _parse_networks(trusted_proxies)
         # Authenticated surfaces bill the credential rather than the address,
         # so one account cannot spend a shared office IP's whole budget — and
@@ -256,7 +265,7 @@ class RateLimitMiddleware:
         )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not scope["path"].startswith(self._path_prefixes):
+        if scope["type"] != "http" or not self._guards(scope["path"]):
             await self.app(scope, receive, send)
             return
 
@@ -292,6 +301,14 @@ class RateLimitMiddleware:
         worse than no limiter at all.
         """
         return f"{self._principal(scope)}:{self._route_template(scope['path'])}"
+
+    def _guards(self, path: str) -> bool:
+        """Is ``path`` inside one of this limiter's prefixes?
+
+        A prefix matches the path itself or anything under its ``/``, so
+        ``"/me"`` covers ``/me`` and ``/me/export`` but not ``/metrics``.
+        """
+        return path in self._exact_paths or path.startswith(self._path_subtrees)
 
     def _route_template(self, path: str) -> str:
         """The route template ``path`` resolves to, or ``"<unrouted>"``.
@@ -376,16 +393,22 @@ class RateLimitMiddleware:
         client sends arrives on the *left* and is attacker-controlled. Only
         the entries our own infrastructure appended can be believed, and only
         while every hop between us and them is trusted.
+
+        The result is normalized, so one client is one bucket key however its
+        address was spelled. IPv6 has many spellings of one address —
+        ``2001:db8::1`` and ``2001:0db8:0000:...:0001`` are the same host —
+        and an un-normalized key meant a caller arriving through a trusted
+        proxy could mint a fresh bucket per spelling.
         """
         client = scope.get("client")
-        peer = client[0] if client else "unknown"
+        peer = _normalize_address(client[0]) if client else "unknown"
         if not self._trusted_proxies or not _in_networks(peer, self._trusted_proxies):
             return peer
 
         forwarded = _forwarded_for(scope)
         for candidate in reversed(forwarded):
             if not _in_networks(candidate, self._trusted_proxies):
-                return candidate
+                return _normalize_address(candidate)
         # Every hop claimed to be a proxy. Fall back to the peer rather than
         # believing the leftmost (fully client-controlled) entry.
         return peer
@@ -441,6 +464,20 @@ def _bearer_token(scope: Scope) -> str | None:
             if scheme.lower() == "bearer" and token.strip():
                 return token.strip()
     return None
+
+
+def _normalize_address(address: str) -> str:
+    """One canonical spelling per address, for use as a bucket key.
+
+    ``ipaddress`` collapses IPv6 to its compressed form, so every way of
+    writing one address maps to one key. Anything unparseable is returned
+    unchanged: it will not match a trusted network either, and inventing a
+    key for it would be worse than billing the literal string.
+    """
+    try:
+        return ipaddress.ip_address(address).compressed
+    except ValueError:
+        return address
 
 
 def _forwarded_for(scope: Scope) -> list[str]:

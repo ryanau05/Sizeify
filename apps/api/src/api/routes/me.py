@@ -44,6 +44,7 @@ from pydantic import BaseModel
 
 from api.auth import password as auth_password
 from api.deps import (
+    NO_STORE,
     RATE_LIMITED_RESPONSE,
     UNAUTHORIZED_RESPONSE,
     CurrentUser,
@@ -112,7 +113,11 @@ async def _paged[RowT: BaseModel](
         offset += _EXPORT_PAGE_SIZE
 
 
-@router.get("/export", responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE})
+@router.get(
+    "/export",
+    responses={**UNAUTHORIZED_RESPONSE, **RATE_LIMITED_RESPONSE},
+    dependencies=[NO_STORE],
+)
 async def export(
     user: CurrentUser,
     garments: OwnedGarmentRepositoryDep,

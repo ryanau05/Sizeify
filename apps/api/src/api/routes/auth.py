@@ -45,6 +45,7 @@ from api.auth import jwt as auth_jwt
 from api.auth import password as auth_password
 from api.config import Settings, get_settings
 from api.deps import (
+    NO_STORE,
     RATE_LIMITED_RESPONSE,
     ErrorDetail,
     RefreshTokenRepositoryDep,
@@ -259,6 +260,7 @@ def _log_existing_address() -> None:
 @router.post(
     "/login",
     responses={**_INVALID_CREDENTIALS_RESPONSE, **RATE_LIMITED_RESPONSE},
+    dependencies=[NO_STORE],
 )
 async def login(
     body: LoginRequest,
@@ -318,6 +320,7 @@ async def login(
 @router.post(
     "/refresh",
     responses={**_INVALID_CREDENTIALS_RESPONSE, **RATE_LIMITED_RESPONSE},
+    dependencies=[NO_STORE],
 )
 async def refresh(
     body: RefreshRequest,

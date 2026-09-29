@@ -698,3 +698,42 @@ async def test_login_still_rehashes_when_parameters_were_raised(
 
 async def _always_needs_rehash(stored_hash: str) -> bool:
     return True
+
+
+async def test_token_responses_are_never_stored(client: AsyncClient) -> None:
+    """RFC 6749 §5.1: a response carrying a token must not be cached.
+
+    Without it an intermediary — a corporate proxy, a browser's disk cache —
+    is free to keep a bearer token and hand it to whoever asks next.
+
+    Both token-issuing paths are checked on their *success* responses, which
+    are the ones that actually carry a token. The 401 path does not get these
+    headers: FastAPI builds a fresh response for a raised ``HTTPException``,
+    which discards what a dependency wrote. That is acceptable here precisely
+    because a 401 body carries no token — but it is the reason this test signs
+    in for real rather than poking the error path.
+    """
+    pair = await _register_and_sign_in(client)
+
+    login_headers = (
+        await client.post("/auth/login", json={"email": "alice@example.com", "password": PASSWORD})
+    ).headers
+    refresh_response = await client.post(
+        "/auth/refresh", json={"refresh_token": pair["refresh_token"]}
+    )
+
+    assert refresh_response.status_code == 200, refresh_response.text
+    for headers in (login_headers, refresh_response.headers):
+        assert headers["cache-control"] == "no-store"
+        assert headers["pragma"] == "no-cache"
+
+
+async def test_the_export_is_never_stored(client: AsyncClient, db_session: AsyncSession) -> None:
+    """The same rule, for the same reason, on a full dump of personal data."""
+    user = await make_user(db_session, email="nostore-export@example.com")
+    access, _ = await auth_jwt.issue_pair(user.id, RefreshTokenRepository(db_session))
+
+    response = await client.get("/me/export", headers={"Authorization": f"Bearer {access}"})
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
